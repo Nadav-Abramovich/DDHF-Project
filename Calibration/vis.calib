@@ -1,0 +1,22 @@
+# Webcam (vis) lens calibration, read by compare_replay.py (toggle: v).
+#
+# Blank lines and anything after # are ignored. fx = 0 means "not filled in
+# yet" and the undistort toggle stays disabled for this camera.
+#
+#   model          pinhole  - OpenCV cv2.calibrateCamera model
+#                  fisheye  - cv2.fisheye model (dist is then k1 k2 k3 k4)
+#   width height   resolution the calibration was done at. K is rescaled
+#                  if the recording differs; distortion is scale-free
+#   fx fy cx cy    camera matrix K = [[fx 0 cx] [0 fy cy] [0 0 1]], pixels
+#   dist           pinhole: k1 k2 p1 p2 [k3 [k4 k5 k6 [s1 s2 s3 s4 [tx ty]]]]
+#                  fisheye: k1 k2 k3 k4
+model   pinhole
+# From MATLAB cameraIntrinsics (ImageSize [1080 1920] = rows cols).
+# cx/cy shifted by -1: MATLAB pixel coords are 1-based, OpenCV's are 0-based.
+width   1920
+height  1080
+fx      1006.6
+fy      999.7485
+cx      988.8375
+cy      505.3169
+dist    -0.2754 0.0560 0 0

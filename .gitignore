@@ -1,0 +1,10 @@
+# Large generated data: feature caches, downloaded FRED cases, lab recordings
+/common/code/cache/
+/fred/utility/frame_data/
+/fred/script/cases/
+/lab/runs/
+/lab/frame_data/
+/lab/frame_data_variants/
+
+# Python virtual environment
+/common/.venv312/

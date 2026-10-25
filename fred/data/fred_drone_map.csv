@@ -1,0 +1,232 @@
+split,sequence,drone_class(es)
+test,8,Betafpv air75
+test,9,Betafpv air75
+test,12,Betafpv air75
+test,20,DarwinFPV cineape20
+test,21,DarwinFPV cineape20
+test,29,DarwinFPV cineape20
+test,34,DJI Mini 3|DarwinFPV cineape20
+test,39,Betafpv air75
+test,41,Betafpv air75
+test,46,DJI Tello EDU|DarwinFPV cineape20
+test,51,DJI Tello EDU|Betafpv air75
+test,60,DJI Tello EDU|DarwinFPV cineape20
+test,63,DarwinFPV cineape20|DJI Tello EDU
+test,64,DarwinFPV cineape20|DarwinFPV cineape20ger
+test,65,DarwinFPV cineape20|DarwinFPV cineape20ger
+test,80,DarwinFPV cineape20
+test,83,DarwinFPV cineape20
+test,90,DarwinFPV cineape20
+test,93,DJI Mini 3
+test,110,DJI Mini 3
+test,111,DJI Mini 3
+test,114,DarwinFPV cineape20
+test,115,Betafpv air75
+test,127,DJI Tello EDU
+test,128,DJI Tello EDU
+test,129,DJI Tello EDU
+test,138,DJI Tello EDU
+test,139,DJI Tello EDU
+test,142,DJI Tello EDU
+test,152,DJI Tello EDU
+test,153,DJI Tello EDU
+test,154,DJI Tello EDU
+test,162,DJI Tello EDU
+test,163,DJI Tello EDU
+test,167,DJI Tello EDU
+test,178,DJI Tello EDU
+test,179,DJI Tello EDU
+test,187,DJI Tello EDU
+test,194,DJI Tello EDU
+test,195,DJI Tello EDU
+test,196,DJI Tello EDU
+test,202,DJI Mini 2
+test,210,DJI Mini 2
+test,217,DJI Mini 2
+test,219,DJI Mini 2
+test,223,DJI Tello EDU
+test,230,DJI Tello EDU
+train,0,Betafpv air75
+train,1,Betafpv air75
+train,2,Betafpv air75
+train,3,Betafpv air75
+train,4,Betafpv air75
+train,5,Betafpv air75
+train,6,Betafpv air75
+train,7,Betafpv air75
+train,10,Betafpv air75
+train,11,Betafpv air75
+train,13,Betafpv air75
+train,14,Betafpv air75
+train,15,DarwinFPV cineape20
+train,16,DarwinFPV cineape20
+train,17,DarwinFPV cineape20
+train,18,DarwinFPV cineape20
+train,19,DarwinFPV cineape20
+train,22,Betafpv air75
+train,23,Betafpv air75
+train,24,Betafpv air75
+train,25,Betafpv air75
+train,26,DarwinFPV cineape20
+train,27,DarwinFPV cineape20
+train,28,DarwinFPV cineape20
+train,30,DarwinFPV cineape20
+train,31,DarwinFPV cineape20|DJI Mini 3
+train,32,DJI Mini 3|DarwinFPV cineape20
+train,33,DJI Mini 3|DarwinFPV cineape20
+train,35,DJI Mini 3|DarwinFPV cineape20
+train,36,DJI Mini 3|DarwinFPV cineape20
+train,37,Betafpv air75
+train,38,Betafpv air75
+train,40,Betafpv air75
+train,42,DarwinFPV cineape20
+train,43,DarwinFPV cineape20
+train,44,DarwinFPV cineape20|DJI Tello EDU
+train,45,DJI Tello EDU|DarwinFPV cineape20
+train,47,DarwinFPV cineape20|DJI Tello EDU
+train,48,DJI Tello EDU|DarwinFPV cineape20
+train,49,DarwinFPV cineape20|DJI Tello EDU
+train,50,DJI Tello EDU|DarwinFPV cineape20
+train,52,Betafpv air75
+train,53,Betafpv air75
+train,54,Betafpv air75
+train,55,Betafpv air75
+train,56,Betafpv air75
+train,57,DarwinFPV cineape20
+train,58,DarwinFPV cineape20
+train,59,DarwinFPV cineape20|DJI Tello EDU
+train,61,DarwinFPV cineape20|DJI Tello EDU
+train,62,DJI Tello EDU|DarwinFPV cineape20
+train,66,DarwinFPV cineape20
+train,67,DarwinFPV cineape20
+train,68,Betafpv air75|DJI Mini 3
+train,69,Betafpv air75
+train,70,Betafpv air75
+train,71,Betafpv air75
+train,72,Betafpv air75
+train,73,Betafpv air75
+train,74,Betafpv air75
+train,75,DarwinFPV cineape20
+train,76,DarwinFPV cineape20
+train,77,DarwinFPV cineape20
+train,78,DarwinFPV cineape20
+train,79,DarwinFPV cineape20
+train,81,DarwinFPV cineape20
+train,82,DarwinFPV cineape20
+train,84,DarwinFPV cineape20
+train,85,DarwinFPV cineape20
+train,86,DarwinFPV cineape20
+train,87,DarwinFPV cineape20
+train,88,DarwinFPV cineape20
+train,89,DarwinFPV cineape20
+train,91,DJI Mini 3
+train,92,DJI Mini 3
+train,94,Betafpv air75
+train,95,Betafpv air75
+train,96,Betafpv air75
+train,97,Betafpv air75
+train,98,Betafpv air75
+train,99,Betafpv air75
+train,100,Betafpv air75
+train,101,Betafpv air75
+train,102,Betafpv air75
+train,103,Betafpv air75
+train,104,Betafpv air75
+train,105,Betafpv air75
+train,106,Betafpv air75|DJI Mini 3
+train,107,DJI Mini 3
+train,108,DJI Mini 3
+train,109,DJI Mini 3
+train,112,DarwinFPV cineape20
+train,113,DarwinFPV cineape20
+train,116,DJI Tello EDU
+train,117,DJI Tello EDU
+train,118,DJI Tello EDU
+train,119,DJI Tello EDU
+train,120,DJI Tello EDU
+train,121,DJI Tello EDU
+train,122,DJI Tello EDU
+train,123,DJI Tello EDU
+train,124,DJI Tello EDU
+train,125,DJI Tello EDU
+train,126,DJI Tello EDU
+train,130,DJI Tello EDU
+train,131,DJI Tello EDU
+train,132,DJI Tello EDU
+train,133,DJI Tello EDU
+train,134,DJI Tello EDU
+train,135,DJI Tello EDU
+train,136,DJI Tello EDU
+train,137,DJI Tello EDU
+train,140,DJI Tello EDU
+train,141,DJI Tello EDU
+train,143,DJI Tello EDU
+train,144,DJI Tello EDU
+train,145,DJI Tello EDU
+train,146,DJI Tello EDU
+train,147,DJI Tello EDU
+train,148,DJI Tello EDU
+train,149,DJI Tello EDU
+train,150,DJI Tello EDU
+train,151,DJI Tello EDU
+train,155,DJI Tello EDU
+train,156,DJI Tello EDU
+train,157,DJI Tello EDU
+train,158,DJI Tello EDU
+train,159,DJI Tello EDU
+train,160,DJI Tello EDU
+train,161,DJI Tello EDU
+train,164,DJI Tello EDU
+train,165,DJI Tello EDU
+train,166,DJI Tello EDU
+train,168,DJI Tello EDU
+train,169,DJI Tello EDU
+train,170,DJI Tello EDU
+train,171,DJI Tello EDU
+train,172,DJI Tello EDU
+train,173,DJI Tello EDU
+train,174,DJI Tello EDU
+train,175,DJI Tello EDU
+train,176,DJI Tello EDU
+train,177,DJI Tello EDU
+train,180,DJI Tello EDU
+train,181,DJI Tello EDU
+train,182,DJI Tello EDU
+train,183,DJI Tello EDU
+train,184,DJI Tello EDU
+train,185,DJI Tello EDU
+train,186,DJI Tello EDU
+train,188,DJI Tello EDU
+train,189,DJI Tello EDU
+train,190,DJI Tello EDU
+train,191,DJI Tello EDU
+train,192,DJI Tello EDU
+train,193,DJI Tello EDU
+train,197,DJI Mini 2
+train,198,DJI Mini 2
+train,199,DJI Mini 2
+train,200,DJI Mini 2
+train,201,DJI Mini 2
+train,203,DJI Mini 2
+train,204,DJI Mini 2
+train,205,DJI Mini 2
+train,206,DJI Mini 2
+train,207,DJI Mini 2
+train,208,DJI Mini 2
+train,209,DJI Mini 2
+train,211,DJI Tello EDU|DJI Mini 2
+train,212,DJI Mini 2|DJI Tello EDU
+train,213,DJI Mini 2|DJI Tello EDU
+train,214,DJI Mini 2|DJI Tello EDU
+train,215,DJI Mini 2|DJI Tello EDU
+train,216,DJI Tello EDU|DJI Mini 2
+train,218,DJI Mini 2
+train,220,DJI Tello EDU
+train,221,DJI Tello EDU
+train,222,DJI Tello EDU
+train,224,DJI Tello EDU
+train,225,DJI Tello EDU
+train,226,DJI Tello EDU
+train,227,DJI Tello EDU
+train,228,DJI Tello EDU
+train,229,DJI Tello EDU

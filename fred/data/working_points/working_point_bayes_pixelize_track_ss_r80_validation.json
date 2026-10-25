@@ -1,0 +1,56 @@
+{
+  "params": {
+    "min_events": 15,
+    "tau_sf": 0.95,
+    "tau_comb": 3.2163,
+    "min_rotor_pixels": 4,
+    "min_box_area": 1,
+    "min_fill_ratio": 0.0,
+    "min_snr_sum": 106.3193,
+    "min_snr_avg": 3.5103,
+    "alpha": 3.5867,
+    "persist_m": 2,
+    "persist_k": 2,
+    "track_coast": 2,
+    "track_confirm": 1,
+    "track_acquire": 1.6015,
+    "track_predict": true
+  },
+  "match": "center",
+  "track": true,
+  "track_sigma": 20.0,
+  "mode": "pixelize",
+  "skip_start": true,
+  "aggregate": {
+    "train": {
+      "cases": 47,
+      "gtf_hit_rate": 0.8138,
+      "fp_per_frame": 0.4103,
+      "precision": 0.6644,
+      "recall": 0.7898,
+      "precision_frames": 0.7143,
+      "recall_frames": 0.8138,
+      "fp_frames_rate": 0.2941
+    },
+    "test": {
+      "cases": 12,
+      "gtf_hit_rate": 0.8642,
+      "fp_per_frame": 0.2227,
+      "precision": 0.7397,
+      "recall": 0.8636,
+      "precision_frames": 0.769,
+      "recall_frames": 0.8642,
+      "fp_frames_rate": 0.19
+    },
+    "all": {
+      "cases": 59,
+      "gtf_hit_rate": 0.8229,
+      "fp_per_frame": 0.3702,
+      "precision": 0.6764,
+      "recall": 0.8018,
+      "precision_frames": 0.7241,
+      "recall_frames": 0.8229,
+      "fp_frames_rate": 0.2719
+    }
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "params": {
+    "min_events": 15,
+    "tau_sf": 0.9431,
+    "tau_comb": 3.4275,
+    "min_rotor_pixels": 6,
+    "min_box_area": 1,
+    "min_fill_ratio": 0.0047,
+    "min_snr_sum": 249.8477,
+    "min_snr_avg": 3.0346,
+    "alpha": 3.1263,
+    "persist_m": 1,
+    "persist_k": 1,
+    "track_coast": 4,
+    "track_confirm": 1,
+    "track_acquire": 1.175,
+    "track_predict": true
+  },
+  "match": "center",
+  "track": true,
+  "track_sigma": 20.0,
+  "mode": "pixelize",
+  "skip_start": false,
+  "aggregate": {
+    "all": {
+      "cases": 10,
+      "gtf_hit_rate": 0.6901,
+      "fp_per_frame": 0.3753,
+      "precision": 0.6236,
+      "recall": 0.6321,
+      "precision_frames": 0.6187,
+      "recall_frames": 0.6901,
+      "fp_frames_rate": 0.352
+    }
+  }
+}

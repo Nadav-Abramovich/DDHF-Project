@@ -1,0 +1,33 @@
+{
+  "params": {
+    "min_events": 4,
+    "tau_sf": 0.7,
+    "tau_comb": 2.0,
+    "min_rotor_pixels": 5,
+    "min_box_area": 1,
+    "min_fill_ratio": 0.0,
+    "min_snr_sum": 0.0,
+    "min_snr_avg": 0.0,
+    "alpha": 1.5,
+    "persist_m": 1,
+    "persist_k": 1
+  },
+  "metrics": {
+    "tp": 2268,
+    "fp": 617,
+    "fn": 620,
+    "gtf_hit_rate": 0.7853185595567868,
+    "fp_per_frame": 0.18573148705599038,
+    "precision": 0.7861351819757366,
+    "recall": 0.7853185595567868
+  },
+  "cases": [
+    "10"
+  ],
+  "mode": "baseline",
+  "match": "center",
+  "match_thr": 1.0,
+  "track": true,
+  "track_sigma": 20.0,
+  "max_fppf": 0.2
+}

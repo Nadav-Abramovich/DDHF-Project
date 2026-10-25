@@ -1,0 +1,24 @@
+# Python packages for drone_project_final (Python 3.12, 64-bit).
+# Install into a fresh venv - see how_to.txt in the project root:
+#     py -3.12 -m venv --system-site-packages common\.venv
+#     common\.venv\Scripts\python -m pip install -r common\requirements.txt
+#
+# --system-site-packages is required: the Prophesee Metavision SDK installer puts
+# its Python modules (metavision_core, metavision_hal, metavision_sdk_*) into the
+# Python 3.12 installation itself; they are not on pip.
+
+numpy==2.4.6
+scipy==1.17.1
+pandas==3.0.3
+matplotlib==3.10.9
+opencv-python==4.13.0.92
+pillow==12.2.0
+
+# fred/utility/fred_drone_map.py (rebuilds fred/data/fred_drone_map.csv)
+requests==2.34.2
+remotezip==0.12.3
+
+# Optional speed-ups (the code falls back automatically when they are missing):
+#   numba          - faster frame_explorer / bayes_working_point (pip install numba)
+#   cupy-cuda12x   - GPU NDFT for the cache builders, needs an NVIDIA GPU + CUDA 12
+#                    (pip install cupy-cuda12x)

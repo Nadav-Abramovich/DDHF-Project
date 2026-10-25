@@ -1,0 +1,19 @@
+# Python packages for the lab folder (Python 3.12, 64-bit).
+# Install into a venv inside this folder - see README.md, "Setup":
+#     py -3.12 -m venv --system-site-packages .venv
+#     .venv\Scripts\python -m pip install -r requirements.txt
+#
+# --system-site-packages is required: the Prophesee Metavision SDK installer puts
+# its Python modules (metavision_core, metavision_hal, metavision_sdk_*) into the
+# Python 3.12 installation itself; they are not on pip.
+
+numpy==2.4.6
+scipy==1.17.1
+pandas==3.0.3
+matplotlib==3.10.9
+opencv-python==4.13.0.92
+pillow==12.2.0
+
+# Optional speed-ups (the code falls back automatically when they are missing):
+#   numba          - faster frame_explorer / working-point search (pip install numba)
+#   cupy-cuda12x   - GPU NDFT for the cache builders, needs an NVIDIA GPU + CUDA 12

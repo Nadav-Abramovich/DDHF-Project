@@ -1,0 +1,121 @@
+drone_project_final - how to set up and run
+============================================
+
+Everything here runs from this folder; nothing outside it is needed except the
+software listed in step 1. All commands below are typed in a Command Prompt
+(cmd.exe) opened in this folder (drone_project_final).
+
+
+1. WHAT YOU NEED (one-time installs)
+-----------------------------------
+  * Windows 10/11, 64-bit.
+  * Python 3.12 (64-bit) from python.org. During install tick "Add python.exe
+    to PATH"; the "py" launcher is installed with it.
+  * Prophesee Metavision SDK 5.2 (installs to C:\Program Files\Prophesee).
+    Its installer also puts the Python modules metavision_core / metavision_hal
+    / metavision_sdk_* into your Python 3.12 - install Python FIRST, then the SDK.
+    These modules are not on pip; that is why the venv below is created with
+    --system-site-packages.
+  * Internet access: FRED cases are downloaded on demand from HuggingFace
+    (dataset GabrieleMagrini/FRED), about 1 GB per case.
+  * Only for the lab/ scripts: the event camera and its CenturyArks driver -
+    see lab\README.md.
+
+
+2. ONE-TIME SETUP (Python environment)
+--------------------------------------
+    py -3.12 -m venv --system-site-packages common\.venv
+    common\.venv\Scripts\python -m pip install -r common\requirements.txt
+
+Check that it works:
+    common\.venv\Scripts\python -c "import metavision_core, numpy, scipy, pandas, matplotlib, cv2; print('ok')"
+
+All .bat launchers use common\.venv automatically.
+
+Optional, for speed: "common\.venv\Scripts\python -m pip install numba", and
+with an NVIDIA GPU + CUDA 12 also "cupy-cuda12x". Everything works without them.
+
+
+3. LOOK AT THE RESULTS - fred\show_case_graphs.bat
+--------------------------------------------------
+    fred\show_case_graphs.bat
+
+One window with per-case precision / recall (and more, via the "metrics"
+checkboxes) for every working point in fred\data\working_points:
+  * "WP n/N" button (bottom right): cycle through the working points.
+  * "drone type": show only the cases of one drone (counts per type).
+  * Hover a case column: its details; case ids are green when the case is
+    already downloaded, red when it is not.
+  * Click a case id (or double-click its column): open that case in the
+    viewer chosen under "case click opens":
+      - debug viewer: the raw events, the working point's own detections,
+        click a pixel to see its spectrum;
+      - frame_explorer: the same replay from the cache, with threshold sliders.
+    A missing case is downloaded first, and its feature cache is built if
+    needed (~2-3 min, one-time per case and mode); progress is shown in the
+    top-left of the window.
+
+
+4. COMPUTE A NEW WORKING POINT
+------------------------------
+A working point is one set of detector + tracking thresholds. Finding one takes
+two steps, both resumable (rerun the same command after a stop to continue):
+
+  a) Build the feature cache for a detector mode:
+         fred\cache_frames.bat
+     It asks for the mode (pixelize is the one the current working points use;
+     or give it directly: fred\cache_frames.bat pixelize). It goes through all
+     231 FRED cases: missing cases are downloaded from HuggingFace, cached, and
+     deleted again, so only ~1 GB of case data is on disk at a time; the cache
+     itself is ~25 MB per case. Expect roughly 2-3 minutes per case (about 10
+     hours for all of them). Cached cases are skipped on a rerun.
+
+  b) Search the working point:
+         fred\bayes_working_point.bat
+     It asks for the mode (and shows how many cases are cached for each), or
+     give it: fred\bayes_working_point.bat --mode pixelize --track
+     It searches over the cached cases of that mode. Useful options:
+     --iterations N, --workers N (cases in parallel), --stride 3 (every 3rd
+     case, faster), --agg min (best worst-case precision). See
+         common\.venv\Scripts\python common\utility\bayes_working_point.py --help
+
+The result is written to fred\data\working_points\
+(working_point_bayes_<tag>.json + working_point_eval_bayes_<tag>.csv) and shows
+up in show_case_graphs.bat automatically.
+
+
+5. OTHER TOOLS (run with common\.venv\Scripts\python <script> --help for options)
+--------------------------------------------------------------------------------
+  common\utility\case_statistics.py   rebuild fred\data\case_statistics.csv
+                                      (per-case event / ground-truth statistics;
+                                      resumable, downloads missing cases)
+  fred\utility\fred_drone_map.py      rebuild fred\data\fred_drone_map.csv
+                                      (which drone is in which case, train/test)
+  fred\utility\pass_rate_vs_events.py detector pass rate vs events per pixel
+  fred\utility\convert_cache_npz.py   faster-loading .npz copies of the caches
+
+
+6. WHERE THINGS ARE
+-------------------
+  fred\data\                      small data: working points, drone map, case
+                                  statistics, HuggingFace case list
+  fred\script\cases\<N>\          downloaded FRED cases (~1 GB each; safe to
+                                  delete, they are re-downloaded when needed)
+  fred\utility\frame_data\        feature caches, all modes (safe to delete,
+                                  rebuilt when needed)
+  common\code, common\utility     the detector and the shared tools
+  lab\                            lab camera work - see lab\README.md
+
+The lab\ folder has the same three launchers for the lab recordings
+(lab\show_lab_case_graphs.bat, lab\cache_frames.bat,
+lab\bayes_working_point.bat) - see lab\README.md.
+
+
+7. IF SOMETHING FAILS
+---------------------
+  * "No module named metavision_core": the SDK is missing, or the venv was made
+    without --system-site-packages, or Python is not 3.12. Redo step 2.
+  * A case fails to download: check the internet connection and retry; the
+    tools resume where they stopped.
+  * The graphs window's console (the black window behind it) shows the details
+    of anything that went wrong.
