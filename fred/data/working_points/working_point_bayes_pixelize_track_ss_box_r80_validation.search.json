@@ -1,0 +1,36 @@
+{
+  "kind": "fixed working point evaluated on held-out recordings",
+  "working_point": "fred/data/working_points/working_point_bayes_pixelize_track_ss_box_r80_validation.json",
+  "command": "eval_validation.py --tag pixelize_track_ss_box_r80 --objective precision --agg mean --min-gtf 0.8 --recall-level box --penalty 3",
+  "argv": [
+    "eval_validation.py",
+    "--tag",
+    "pixelize_track_ss_box_r80",
+    "--objective",
+    "precision",
+    "--agg",
+    "mean",
+    "--min-gtf",
+    "0.8",
+    "--recall-level",
+    "box",
+    "--penalty",
+    "3"
+  ],
+  "code_commit": "7d4eaa3 (+uncommitted changes)",
+  "notes": [
+    "Evaluates working_point_bayes_pixelize_track_ss_box_r80.json unchanged (no search) on FRED cases 171-230 that have a cache, with the same pipeline, metrics and objective as its search (bayes_working_point.evaluate_point / metrics_from_rows / score_of)."
+  ],
+  "feature_cache": {
+    "dir": "fred/utility/frame_data",
+    "settings": {
+      "mode": "pixelize",
+      "drone": "all",
+      "min_events_floor": 3,
+      "sf_max": 0.9,
+      "snr_min": 1.5,
+      "lead_in_skipped": true,
+      "window_ms": 33.333
+    }
+  }
+}
