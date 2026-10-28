@@ -137,7 +137,9 @@ def _write_pixels(D, out_csv, min_ev_floor, sf_max, snr_min):
     })                                                   # columns == PIXEL_COLUMNS
     df.sort_values("frame", kind="stable", inplace=True)  # frame-sorted, like build_dataset
     tmp = out_csv + ".tmp"
-    df.to_csv(tmp, index=False, compression="gzip", float_format="%.6g")
+    # gzip level 1: same rows/values, ~2x faster to write than the level-9 default
+    df.to_csv(tmp, index=False, compression={"method": "gzip", "compresslevel": 1},
+              float_format="%.6g")
     os.replace(tmp, out_csv)
     return int(len(df))
 
@@ -208,6 +210,11 @@ def main():
                     help="Precompute worker processes (default: min(8, CPU-1)). "
                          "Each loads the event stream, so raise cautiously (RAM).")
     ap.add_argument("--gpu", action="store_true", help="Use CuPy GPU for the NDFT.")
+    ap.add_argument("--gpu-fused", action="store_true",
+                    help="Spectral stage (NDFT, SF, comb SNR, subharmonic test) in one "
+                         "fused CUDA kernel (common/code/gpu_fused.py), GPU only: fails "
+                         "instead of falling back to the CPU. Same sf/snr as the CPU path "
+                         "to ~1e-4 relative. Implies --gpu.")
     ap.add_argument("--keep-cache", action="store_true",
                     help="Keep each case's spectral .npz precompute (code/cache/). "
                          "Default deletes it after the CSV is written to save disk "
@@ -228,7 +235,34 @@ def main():
                          "cache only serves skip-lead-in scoring (bayes "
                          "--skip-start, the viewers' 'exclude lead-in'); its meta "
                          "JSON records lead_in_skipped + first_frame.")
+    ap.add_argument("--subharmonic-reject", action="store_true",
+                    help="Reject a pixel when a subharmonic of its comb fundamental, "
+                         "outside the drone bands, has a stronger comb (DDHFConfig."
+                         "subharmonic_reject). Changes snr: write to its own --out-dir.")
+    ap.add_argument("--subharmonic-half-width", type=int, default=1,
+                    help="Harmonic window half-width [bins] for that test (default 1).")
+    ap.add_argument("--subharmonic-min-hz", type=float, default=60.0,
+                    help="Lowest subharmonic tested [Hz] (default 60).")
+    ap.add_argument("--subharmonic-ratio", type=float, default=1.0,
+                    help="Reject when SNR(sub) > ratio x SNR(f0) (default 1 = stronger).")
+    ap.add_argument("--subharmonic-mode", choices=("comb", "between"), default="comb",
+                    help="How a subharmonic is scored: 'comb' = its comb SNR vs f0's "
+                         "(default); 'between' = mean peak of its lines lying between f0's "
+                         "harmonics vs the mean peak of f0's harmonics.")
+    ap.add_argument("--subharmonic-min-k", type=int, default=2,
+                    help="Smallest k of the subharmonics f0/k tested (default 2).")
+    ap.add_argument("--comb-noise-stat", choices=("median", "mean"), default="median",
+                    help="Comb SNR noise floor over the non-harmonic bins (DDHFConfig."
+                         "comb_noise_stat). 'mean' changes snr: use its own --out-dir. "
+                         "Default median = the usual cache.")
+    ap.add_argument("--spectral-oversample", type=int, default=1,
+                    help="Evaluate the NDFT n x denser (bins every 1000/(window_ms*n) Hz; "
+                         "DDHFConfig.spectral_oversample). Changes sf/snr: use its own "
+                         "--out-dir. Default 1 = the usual spectrum.")
     args = ap.parse_args()
+    if args.gpu_fused:                    # inherited by the spawned precompute workers
+        os.environ["DDHF_GPU_FUSED"] = "1"
+        args.gpu = True
 
     import ddhf_stats_explorer as EX      # spectral precompute (shares its disk cache)
     # Precompute the NDFT only for pixels at/above our write floor. Sub-floor
@@ -251,8 +285,26 @@ def main():
     else:
         seqs = sorted(set(index) | set(CS._local_cases(roots)), key=CS._seq_sort_key)
 
+    # Optional spectral settings (off by default: the cache is then exactly the
+    # usual one). They change the stored snr, so use a separate --out-dir.
+    spectral_ov = {}
+    if args.subharmonic_reject:
+        spectral_ov = dict(subharmonic_reject=True,
+                           subharmonic_half_width=args.subharmonic_half_width,
+                           subharmonic_min_hz=args.subharmonic_min_hz,
+                           subharmonic_ratio=args.subharmonic_ratio)
+        if args.subharmonic_mode != "comb" or args.subharmonic_min_k != 2:
+            spectral_ov.update(subharmonic_mode=args.subharmonic_mode,
+                               subharmonic_min_k=args.subharmonic_min_k)
+    if args.spectral_oversample > 1:
+        spectral_ov["spectral_oversample"] = int(args.spectral_oversample)
+    if args.comb_noise_stat != "median":
+        spectral_ov["comb_noise_stat"] = args.comb_noise_stat
+    variant = EX.feature_variant(EX.build_cfg(**spectral_ov))
+
     B._log(log_path, f"START frame features — mode={args.mode} bands={DRONE} "
-                     f"{len(seqs)} cases -> {args.out_dir}")
+                     f"{len(seqs)} cases -> {args.out_dir}"
+                     + (f" [spectral variant {variant}]" if variant else ""))
 
     n_ok = n_err = n_skip = 0
     for name in seqs:
@@ -279,7 +331,7 @@ def main():
                 f0 = _first_gt_frame(gt_csv)
                 EX.PRECOMPUTE_START = f0 or 1
                 lead = dict(lead_in_skipped=True, first_frame=f0)
-            D = EX.build_dataset(seq_rel, args.mode, DRONE, STRIDE, {},
+            D = EX.build_dataset(seq_rel, args.mode, DRONE, STRIDE, spectral_ov,
                                  args.max_frames, args.workers, args.gpu)
             meta = _meta(D)
             if lead.get("first_frame"):          # D counts computed windows only
@@ -293,9 +345,9 @@ def main():
                 json.dump({**meta, "mode": args.mode, "drone": DRONE,
                            "min_events_floor": args.min_events_floor,
                            "sf_max": args.sf_max, "snr_min": args.snr_min,
-                           "pixel_rows": n_rows, **lead}, fh, indent=2)
+                           "pixel_rows": n_rows, **lead, **spectral_ov}, fh, indent=2)
             if not args.keep_cache:
-                B._safe_remove(EX.features_path(seq_rel, args.mode))
+                B._safe_remove(EX.features_path(seq_rel, args.mode, variant))
             n_ok += 1
             dt = (time.perf_counter() - t0) / 60.0
             B._log(log_path, f"  DONE {name}: {n_rows} pixel-rows over "

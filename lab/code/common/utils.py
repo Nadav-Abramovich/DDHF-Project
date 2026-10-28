@@ -92,6 +92,44 @@ class DDHFConfig:
     alpha:               float = 2   # α — box-merge join-radius factor (Eq. 12):
                                          #   merge boxes when dist(c1,c2) <
                                          #   α·max(w1,h1,w2,h2). Paper Table 2 value.
+    subharmonic_reject:  bool  = False   # if True: after the comb search, reject a pixel (comb
+                                         #   SNR -> 0) when a subharmonic ω*/k of its winning
+                                         #   fundamental, lying OUTSIDE rotor_bands_hz, has a
+                                         #   stronger comb than ω* itself — i.e. ω* is only a
+                                         #   harmonic of a lower source (fan, mains flicker).
+    subharmonic_half_width: int = 1      # Δk [bins] for that test, used for ω* AND its
+                                         #   subharmonics so the two SNRs are comparable
+                                         #   (subharmonics are fractional bins, e.g. 110 Hz = 3.67).
+    subharmonic_min_hz:  float = 60.0    # lowest subharmonic tested [Hz] (below it the
+                                         #   spectrum is dominated by motion / DC leakage)
+    subharmonic_ratio:   float = 1.0     # reject when SNR(sub) > ratio · SNR(ω*); 1 = "stronger"
+    subharmonic_mode:    str   = "comb"  # how a subharmonic s = ω*/k is scored:
+                                         #   'comb'    comb SNR at s vs comb SNR at ω* (both ±
+                                         #             subharmonic_half_width) — the original test;
+                                         #   'between' mean peak of the lines of s that are NOT
+                                         #             harmonics of ω* (j·s, j % k != 0, up to
+                                         #             num_harmonics·ω*; ± subharmonic_half_width)
+                                         #             vs the mean peak of ω*'s harmonics (±
+                                         #             harmonic_half_width). A drone has nothing
+                                         #             between its lines; a lower source does.
+                                         #   'peak'    the strongest single bin from
+                                         #             subharmonic_min_hz up to ω* −
+                                         #             subharmonic_excl_hz vs ω*'s own peak
+                                         #             (± subharmonic_half_width); no k, no comb.
+    subharmonic_min_k:   int   = 2       # smallest k tested (3 skips ω*/2, e.g. a 2-blade
+                                         #   rotor's own shaft rate)
+    subharmonic_excl_hz: float = 30.0    # 'peak' mode: bins closer than this below ω* are
+                                         #   ω*'s own spread, not a lower source
+    subharmonic_skip_bands: str = "none" # 'peak' mode: also skip bins inside ω*'s own
+                                         #   rotor band ('own') or inside every band ('all')
+    comb_noise_stat:     str   = "median"  # comb SNR noise floor over the non-harmonic bins:
+                                         #   'median' (paper) or 'mean'
+    spectral_oversample: int   = 1       # n > 1: evaluate the NDFT every 1000/(window_ms·n) Hz
+                                         #   instead of every 1000/window_ms Hz (n× denser bins,
+                                         #   same Hz span). Bin-defined widths (harmonic_half_width,
+                                         #   subharmonic_half_width) scale by n so they keep their
+                                         #   width in Hz. Sampling only: the window still blurs lines
+                                         #   closer than ~1000/window_ms Hz. 1 = paper behaviour.
 
     @property
     def frequency_bins(self) -> int:
@@ -99,9 +137,20 @@ class DDHFConfig:
         regardless of window_ms (each bin = 1000/window_ms Hz). This is what
         prevents a longer window from silently dropping the rotor harmonics.
         Default (6300 Hz @ 33.3 ms) gives K≈210, enough for a 4-harmonic comb on
-        the highest band fundamental (~1500 Hz). The paper used 1920 Hz / K=64."""
+        the highest band fundamental (~1500 Hz). The paper used 1920 Hz / K=64.
+        With spectral_oversample n the same span holds n·K bins."""
         k = int(round(self.max_freq_hz * self.window_ms / 1000.0))
-        return max(self.num_harmonics + 1, k)
+        return max(self.num_harmonics + 1, k) * max(1, int(self.spectral_oversample))
+
+
+def _os(cfg) -> int:
+    """cfg.spectral_oversample (1 for configs that predate it)."""
+    return max(1, int(getattr(cfg, "spectral_oversample", 1)))
+
+
+def _bin_hz(cfg) -> float:
+    """Spacing of the NDFT bins in Hz: 1000/window_ms, divided by the oversampling."""
+    return 1000.0 / cfg.window_ms / _os(cfg)
 
 
 _DEFAULT = DDHFConfig()
@@ -147,6 +196,7 @@ def _ndft_power_batch(
     group_starts: np.ndarray,
     K: int,
     max_chunk_elems: int = 4_000_000,
+    k_step: float = 1.0,
 ) -> np.ndarray:
     """
     Non-Uniform DFT power spectrum for every pixel group, computed at once.
@@ -178,6 +228,8 @@ def _ndft_power_batch(
     G = group_starts.size
     N = tn_sorted.size
     k = np.arange(K, dtype=np.float64)                       # (K,)
+    if k_step != 1.0:                                        # fractional k: denser bins
+        k = k * k_step                                       # (cfg.spectral_oversample)
     power = np.empty((K, G), dtype=np.float64)               # (K, G)
 
     # Max events per chunk so that K·n_events ≤ max_chunk_elems (≥1 group always).
@@ -257,10 +309,11 @@ def _comb_snr_batch(power: np.ndarray, cfg: DDHFConfig,
     """
     K, G = power.shape
     best = np.zeros(G, dtype=np.float64)
-    best_om = np.zeros(G, dtype=np.int64) if return_omega else None
+    sub_reject = getattr(cfg, "subharmonic_reject", False)
+    best_om = np.zeros(G, dtype=np.int64) if (return_omega or sub_reject) else None
 
     bands  = cfg.rotor_bands_hz
-    bin_hz = 1000.0 / cfg.window_ms
+    bin_hz = _bin_hz(cfg)
 
     for omega in range(1, K // cfg.num_harmonics + 1):
         # Only look for the combs of the dataset's drones: skip any fundamental
@@ -276,8 +329,8 @@ def _comb_snr_batch(power: np.ndarray, cfg: DDHFConfig,
         peak_powers: List[np.ndarray] = []                  # each (G,)
 
         for h in harmonics:
-            lo = max(0, h - cfg.harmonic_half_width)
-            hi = min(K - 1, h + cfg.harmonic_half_width)
+            lo = max(0, h - cfg.harmonic_half_width * _os(cfg))
+            hi = min(K - 1, h + cfg.harmonic_half_width * _os(cfg))
             peak_powers.append(power[lo : hi + 1, :].max(axis=0))
             harmonic_mask[lo : hi + 1] = True
 
@@ -291,13 +344,14 @@ def _comb_snr_batch(power: np.ndarray, cfg: DDHFConfig,
         # the comb and doesn't depend on the arbitrary spectrum length K.
         nbh = getattr(cfg, "noise_band_harmonics", 0.0)
         if nbh > 0:
-            band_hi = min(K, int(nbh * harmonics[-1]) + cfg.harmonic_half_width + 1)
+            band_hi = min(K, int(nbh * harmonics[-1]) + cfg.harmonic_half_width * _os(cfg) + 1)
             noise_mask[band_hi:] = False
         noise = power[noise_mask, :]                         # (n_noise, G)
         if noise.shape[0] == 0:
             continue
 
-        median_noise = np.median(noise, axis=0)             # (G,)
+        median_noise = (noise.mean(axis=0) if getattr(cfg, "comb_noise_stat", "median") == "mean"
+                        else np.median(noise, axis=0))      # (G,)
         # Optional median floor (off by default): a near-empty spectrum has a
         # ~0 median, which makes SNR explode for any scrap of low-frequency power
         # (the 30 Hz collapse). Floor the median at a fraction of the per-pixel
@@ -325,12 +379,126 @@ def _comb_snr_batch(power: np.ndarray, cfg: DDHFConfig,
 
         better = snr > best
         best[better] = snr[better]
-        if return_omega:
+        if best_om is not None:
             best_om[better] = omega
 
+    if sub_reject:
+        best = _subharmonic_reject(power, best, best_om, cfg)
     if return_omega:
         return best, best_om
     return best
+
+
+def _comb_snr_at(power: np.ndarray, f0: float, num_harmonics: int,
+                 min_harmonics: int, half_width: int) -> np.ndarray:
+    """Comb SNR (same definition as _comb_snr_batch: mean harmonic peak over the
+    median of the non-harmonic, non-DC bins) for ONE fundamental f0 given in
+    bins, which may be fractional; harmonic m sits at round(m·f0) ± half_width.
+    ``power`` is (K, G); returns (G,), 0 where fewer than min_harmonics fit."""
+    K, G = power.shape
+    centres = [int(round(m * f0)) for m in range(1, num_harmonics + 1)]
+    centres = [c for c in centres if 1 <= c < K]
+    if len(centres) < min_harmonics:
+        return np.zeros(G)
+    mask = np.zeros(K, dtype=bool)
+    peaks = []
+    for c in centres:
+        lo = max(1, c - half_width); hi = min(K - 1, c + half_width)
+        peaks.append(power[lo : hi + 1, :].max(axis=0))
+        mask[lo : hi + 1] = True
+    mask[0] = True                                       # DC is never noise
+    if mask.all():
+        return np.zeros(G)
+    med = np.median(power[~mask, :], axis=0)
+    out = np.zeros(G)
+    ok = med >= 1e-10
+    out[ok] = np.mean(np.stack(peaks), axis=0)[ok] / med[ok]
+    return out
+
+
+def _between_peak(power: np.ndarray, s: float, k: int, num_harmonics: int,
+                  half_width: int, f_min_bins: float) -> np.ndarray:
+    """Mean peak (± half_width bins) over the lines j·s of a lower source s = ω*/k
+    that are NOT harmonics of ω* (j = 1 … k·num_harmonics − 1, j % k != 0), from
+    f_min_bins up. ``power`` is (K, G); returns (G,), 0 when no line fits."""
+    K, G = power.shape
+    lines = [int(round(j * s)) for j in range(1, k * num_harmonics)
+             if j % k and j * s >= f_min_bins and int(round(j * s)) + half_width < K]
+    if not lines:
+        return np.zeros(G)
+    return np.mean([power[max(1, c - half_width): c + half_width + 1, :].max(axis=0)
+                    for c in lines], axis=0)
+
+
+def _peak_below(power: np.ndarray, om: int, cfg: DDHFConfig) -> np.ndarray:
+    """'peak' subharmonic mode: the strongest single bin from subharmonic_min_hz up to
+    ω* − subharmonic_excl_hz (ω* = bin om), optionally skipping bins inside ω*'s own
+    rotor band or inside every band (subharmonic_skip_bands). ``power`` is (K, G);
+    returns (G,), 0 when no bin is left."""
+    K, G = power.shape
+    bin_hz = _bin_hz(cfg)
+    lo = int(np.ceil(cfg.subharmonic_min_hz / bin_hz))
+    hi = om - int(round(getattr(cfg, "subharmonic_excl_hz", 30.0) / bin_hz)) - 1
+    sel = np.zeros(K, dtype=bool)
+    if hi >= lo:
+        sel[lo:hi + 1] = True
+    skip = getattr(cfg, "subharmonic_skip_bands", "none")
+    freqs = np.arange(K) * bin_hz
+    bands = cfg.rotor_bands_hz or ()
+    if skip == "own":
+        bands = [b for b in bands if b[0] <= om * bin_hz <= b[1]]
+    if skip in ("own", "all"):
+        for b_lo, b_hi in bands:
+            sel &= ~((freqs >= b_lo) & (freqs <= b_hi))
+    if not sel.any():
+        return np.zeros(G)
+    return power[sel, :].max(axis=0)
+
+
+def _subharmonic_reject(power: np.ndarray, best: np.ndarray,
+                        best_om: np.ndarray, cfg: DDHFConfig) -> np.ndarray:
+    """cfg.subharmonic_reject: zero the comb SNR of every pixel whose winning
+    fundamental ω* is only a harmonic of a lower source. For each subharmonic
+    ω*/k (k = subharmonic_min_k, …) at or above subharmonic_min_hz that lies
+    OUTSIDE every rotor band, a score is measured (see subharmonic_mode); if any
+    exceeds subharmonic_ratio × the score of ω*, the pixel is rejected. Pixels
+    are grouped by ω*, so the cost is per distinct ω*. In 'peak' mode the score is
+    instead the strongest bin below ω* (see _peak_below) against ω*'s own peak."""
+    bands  = cfg.rotor_bands_hz
+    bin_hz = _bin_hz(cfg)
+    M, h_min = cfg.num_harmonics, cfg.min_harmonics
+    dk = int(cfg.subharmonic_half_width) * _os(cfg)
+    f_min_bins = cfg.subharmonic_min_hz / bin_hz
+    mode = getattr(cfg, "subharmonic_mode", "comb")
+    between = mode == "between"
+    k_min = max(2, int(getattr(cfg, "subharmonic_min_k", 2)))
+    out = best.copy()
+    for om in np.unique(best_om[best_om > 0]):
+        idx = np.flatnonzero((best_om == om) & (best > 0))
+        if idx.size == 0:
+            continue
+        P = power[:, idx]
+        if mode == "peak":
+            ref = P[max(1, om - dk): om + dk + 1, :].max(axis=0)
+            sub = _peak_below(P, int(om), cfg)
+            out[idx[sub > cfg.subharmonic_ratio * ref]] = 0.0
+            continue
+        if between:
+            hw = int(cfg.harmonic_half_width) * _os(cfg)
+            ref = np.mean([P[max(1, c - hw): c + hw + 1, :].max(axis=0)
+                           for c in range(om, M * om + 1, om) if c < P.shape[0]], axis=0)
+        else:
+            ref = _comb_snr_at(P, float(om), M, h_min, dk)
+        sub = np.zeros(idx.size)
+        k = k_min
+        while om / k >= f_min_bins:
+            s = om / k
+            if not (bands and any(lo <= s * bin_hz <= hi for lo, hi in bands)):
+                sub = np.maximum(sub, _between_peak(P, s, k, M, dk, f_min_bins) if between
+                                 else _comb_snr_at(P, s, M, h_min, dk))
+            k += 1
+        out[idx[sub > cfg.subharmonic_ratio * ref]] = 0.0
+    return out
 
 
 # ── Per-window rotor detection ────────────────────────────────────────────────
@@ -388,7 +556,8 @@ def _detect_rotor_pixels(
     starts = np.concatenate(([0], np.flatnonzero(np.diff(pid_k)) + 1))
 
     # Vectorised NDFT power spectra for the surviving pixel groups: (K, G)
-    power = _ndft_power_batch(None, pol_k, tn_k, starts, cfg.frequency_bins)
+    power = _ndft_power_batch(None, pol_k, tn_k, starts, cfg.frequency_bins,
+                              k_step=1.0 / _os(cfg))
 
     # Pixel coordinates of each surviving group.
     grp_pid = pid_k[starts]
@@ -410,7 +579,7 @@ def _detect_rotor_pixels(
         return rotor, scores
     # bin → Hz: the NDFT is anchored to the fixed window duration (see
     # _normalise_timestamps), so bin k is k·(1000/window_ms) Hz in every window.
-    freqs[py[sel], px[sel]] = (omega[sel] * (1000.0 / cfg.window_ms)).astype(np.float32)
+    freqs[py[sel], px[sel]] = (omega[sel] * _bin_hz(cfg)).astype(np.float32)
     return rotor, scores, freqs
 
 

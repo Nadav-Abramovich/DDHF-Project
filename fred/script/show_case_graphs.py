@@ -23,6 +23,7 @@ Usage:
 """
 import os
 import sys
+import json
 import glob
 import argparse
 
@@ -166,6 +167,28 @@ def _case_dir(seq, download=True, progress=None):
                                 data_dir=_HF_DIR, progress=progress)
 
 
+def _wp_data_dir(wp_json):
+    """The feature cache a working point was searched on, from its companion
+    <wp>.search.json (feature_cache.dir, relative to the project root); None
+    when absent, i.e. the default utility/frame_data."""
+    if not wp_json:
+        return None
+    side = os.path.splitext(wp_json)[0] + ".search.json"
+    if not os.path.exists(side):
+        return None
+    try:
+        with open(side, encoding="utf-8") as fh:
+            rel = (json.load(fh).get("feature_cache") or {}).get("dir")
+    except Exception:
+        return None
+    if not rel:
+        return None
+    root = os.path.dirname(os.path.dirname(_THIS_DIR))
+    d = os.path.normpath(rel if os.path.isabs(rel) else os.path.join(root, rel))
+    default = os.path.normpath(os.path.join(os.path.dirname(_THIS_DIR), "utility", "frame_data"))
+    return None if d == default else d
+
+
 def _has_frame_cache(seq, mode, data_dir=None):
     """True when frame_features has cached this case+mode (what --wp replays from)."""
     base = os.path.join(data_dir or os.path.join(os.path.dirname(_THIS_DIR), "utility", "frame_data"),
@@ -192,7 +215,7 @@ def _debug_viewer_cmd(seq, meta, wp_json=None):
     cmd = [sys.executable, os.path.join(_CODE_DIR, "debug_viewer_pooled.py"),
            "--seq", os.path.relpath(case, _CODE_DIR)]   # resolved vs this folder
     if wp_json and os.path.exists(wp_json) \
-            and _has_frame_cache(seq, mode):
+            and _has_frame_cache(seq, mode, _wp_data_dir(wp_json)):
         return cmd + ["--wp", os.path.abspath(wp_json)]  # faithful replay
     cmd += ["--mode", mode,
             "--min-events", str(int(round(float(p.get("min_events", 4))))),
@@ -204,10 +227,12 @@ def _debug_viewer_cmd(seq, meta, wp_json=None):
     return cmd
 
 
-def _viewer_cmd(seq, meta):
+def _viewer_cmd(seq, meta, wp_json=None):
     """frame_explorer GUI command for `seq` at this working point — the EXACT
     pipeline the scores came from (cached features, full parameter set,
-    including the tracking pass), so what it shows is a bit-true replay."""
+    including the tracking pass), so what it shows is a bit-true replay.
+    A working point searched on another feature cache (e.g. the
+    subharmonic-reject one) is replayed from that cache."""
     p = meta.get("params", {})
 
     def gi(k, dflt):
@@ -241,6 +266,9 @@ def _viewer_cmd(seq, meta):
                 "--track-acquire", gf("track_acquire", 1.0)]
         if p.get("track_predict"):
             cmd += ["--track-predict"]
+    data_dir = _wp_data_dir(wp_json)
+    if data_dir:
+        cmd += ["--data-dir", data_dir]
     return cmd
 
 
@@ -956,7 +984,14 @@ def main():
         # case's frame_data cache: build it first when it is missing.
         exact = (V["which"] == "frame_explorer"
                  or (w.get("json") and os.path.exists(w["json"])))
-        if exact and not _has_frame_cache(seq, mode):
+        wp_data = _wp_data_dir(w.get("json"))
+        if exact and not _has_frame_cache(seq, mode, wp_data):
+            if wp_data:                              # not the default cache: the
+                print(f"case {seq}: not in {wp_data} (the cache "   # builder below
+                      f"{w['label']} was searched on) — build it with "  # only makes
+                      "frame_features.py and the options in its "        # default ones
+                      ".search.json", flush=True)
+                return
             _start_build(seq, mode)                  # resumes _launch when done
             return
         cmd = None
@@ -978,7 +1013,7 @@ def main():
                       "min_snr_avg / persistence / the tracker are NOT applied)",
                       flush=True)
         if cmd is None:                              # frame_explorer GUI
-            cmd = _viewer_cmd(seq, w["meta"])
+            cmd = _viewer_cmd(seq, w["meta"], wp_json=w.get("json"))
         print("launching:", " ".join(cmd), flush=True)
         import subprocess
         try:

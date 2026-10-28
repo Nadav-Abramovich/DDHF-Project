@@ -162,6 +162,7 @@ from utils import (
     _normalise_polarity,
     _normalise_timestamps,
     rgb_frame_seconds,
+    _os, _bin_hz,
 )
 try:
     from scipy.ndimage import label as _scipy_label
@@ -188,6 +189,13 @@ from utils_pooled import (
 from ddhf_config import build_cfg, add_cfg_cli_args, cfg_overrides_from_args
 
 _USE_GPU   = False  # set by --gpu in main(); when True compute_pixel_stats runs on GPU
+
+
+def _gpu_fused():
+    """DDHF_GPU_FUSED=1 (frame_features.py --gpu-fused): compute_pixel_stats runs the
+    one-kernel spectral stage of gpu_fused.py, GPU only (no CPU fallback). Read from
+    the environment on every call so spawned precompute workers inherit it."""
+    return os.environ.get("DDHF_GPU_FUSED", "0") == "1"
 # Detector mode (set in main() from --mode). The three booleans below are derived
 # from the chosen mode via MODE_FLAGS. _COMPONENTS takes precedence in detection;
 # otherwise pixelize takes precedence over pooling, and with neither it's the
@@ -350,11 +358,17 @@ def compute_pixel_stats(evs, ev_height, ev_width, cfg):
 
     K = cfg.frequency_bins
     sf = snr = omega = None
-    if _USE_GPU and _gpu_available():
+    if _gpu_fused():
+        import gpu_fused
+        if not (_gpu_available() and gpu_fused.supported(cfg)):
+            raise RuntimeError("DDHF_GPU_FUSED=1 but the GPU is unavailable or the "
+                               "configuration is not supported by gpu_fused")
+        sf, snr, omega = gpu_fused.fused_stats(pol_k, tn_k, starts, cfg)
+    elif _USE_GPU and _gpu_available():
         # Exact GPU detection path used by ddhf_eval_pooled (fp32 by default, set
         # DDHF_GPU_FP32=0 for fp64). Falls back to CPU for this frame on OOM.
         try:
-            power_g    = _ndft_power_batch_gpu(pol_k, tn_k, starts, K)
+            power_g    = _ndft_power_batch_gpu(pol_k, tn_k, starts, K, k_step=1.0 / _os(cfg))
             sf_g       = _spectral_flatness_batch_gpu(power_g[1:])
             snr_g, om_g = _comb_snr_batch_gpu(power_g, cfg, return_omega=True)
             sf    = _cp.asnumpy(sf_g)
@@ -366,12 +380,12 @@ def compute_pixel_stats(evs, ev_height, ev_width, cfg):
             sf = snr = omega = None
 
     if sf is None:
-        power      = _ndft_power_batch(None, pol_k, tn_k, starts, K)
+        power      = _ndft_power_batch(None, pol_k, tn_k, starts, K, k_step=1.0 / _os(cfg))
         sf         = _spectral_flatness_batch(power[1:])
         snr, omega = _comb_snr_batch(power, cfg, return_omega=True)
 
     bpid = pid_k[starts]
-    f0   = omega * 1000.0 / cfg.window_ms
+    f0   = omega * 1000.0 / cfg.window_ms / _os(cfg)   # /1 exact at the default
     if _PIXELIZE or not _POOLING:
         # per-block grids, then upscale each block to its BxB footprint (B=1 for
         # the baseline per-pixel detector, where upscaling is a no-op).
@@ -445,7 +459,8 @@ def best_comb(power, cfg):
         noise = power[nmask]
         if noise.size == 0:
             continue
-        med = np.median(noise)
+        med = (float(noise.mean()) if getattr(cfg, "comb_noise_stat", "median") == "mean"
+               else np.median(noise))
         mff = getattr(cfg, "snr_median_floor_frac", 0.0)   # optional median floor (off by default)
         if mff > 0:
             med = max(med, mff * float(power[1:].mean()))

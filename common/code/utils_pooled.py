@@ -29,6 +29,7 @@ from scipy import ndimage as _ndi
 from utils import (
     DDHFConfig, BoundingBox, DDHF,
     _ndft_power_batch, _spectral_flatness_batch, _comb_snr_batch,
+    _subharmonic_reject, _os, _bin_hz,
     _extract_boxes as _extract_boxes_ref, _merge_boxes,
     _detect_rotor_pixels as _detect_rotor_pixels_plain,
     _normalise_polarity, _normalise_timestamps,
@@ -103,7 +104,7 @@ def _gpu_available() -> bool:
 
 
 def _ndft_power_batch_gpu(pol_sorted, tn_sorted, group_starts, K,
-                          max_chunk_elems: int = 32_000_000):
+                          max_chunk_elems: int = 32_000_000, k_step: float = 1.0):
     """GPU twin of utils._ndft_power_batch. Returns a CuPy (K, G) power array.
 
     Same chunked construction of the (K, n_e) phasor matrix and the same
@@ -115,6 +116,8 @@ def _ndft_power_batch_gpu(pol_sorted, tn_sorted, group_starts, K,
     pol_g = _cp.asarray(pol_sorted, dtype=rdt)
     tn_g  = _cp.asarray(tn_sorted,  dtype=rdt)
     k     = _cp.arange(K, dtype=rdt)
+    if k_step != 1.0:                                   # fractional k (spectral_oversample)
+        k = k * k_step
     power = _cp.empty((K, G), dtype=rdt)
 
     gs = np.asarray(group_starts)                       # host: chunk bookkeeping
@@ -173,8 +176,9 @@ def _comb_snr_batch_gpu(power, cfg: DDHFConfig, max_cols: int = 50_000,
     (n_omega, K, cols) rank buffer stays around ``max_tmp_elems``."""
     K, G = power.shape
     rdt = power.dtype
+    sub_reject = getattr(cfg, "subharmonic_reject", False)
     best = _cp.zeros(G, dtype=rdt)
-    best_om = _cp.zeros(G, dtype=_cp.int64) if return_omega else None
+    best_om = _cp.zeros(G, dtype=_cp.int64) if (return_omega or sub_reject) else None
     bp = _comb_plan_batched(K, cfg)
     if bp is None:                                   # no valid omega at all
         return (best, best_om) if return_omega else best
@@ -182,6 +186,7 @@ def _comb_snr_batch_gpu(power, cfg: DDHFConfig, max_cols: int = 50_000,
     n_om = omegas.size
     mph = getattr(cfg, "min_present_harmonics", 0)
     factor = getattr(cfg, "harmonic_present_factor", 2.0)
+    noise_mean = getattr(cfg, "comb_noise_stat", "median") == "mean"
     step = max(1, min(max_cols, max_tmp_elems // max(1, n_om * K)))
     # each omega's noise median = mean of its two middle order statistics
     # (== cp.median); they are found in ONE sort per column instead of one
@@ -200,10 +205,13 @@ def _comb_snr_batch_gpu(power, cfg: DDHFConfig, max_cols: int = 50_000,
         peak = pblock[pk_idx].max(axis=2)
         order = _cp.argsort(power[:, c0:c1], axis=0)                 # (K, C)
         srt = _cp.take_along_axis(power[:, c0:c1], order, axis=0)
-        rank = _cp.cumsum(nz_mask[:, order], axis=1, dtype=_cp.int16)  # (n_om, K, C)
-        median_noise = (srt[(rank > lo_i).argmax(axis=1), cols]
-                        + srt[(rank > hi_i).argmax(axis=1), cols]) / 2  # (n_om, C)
-        del rank
+        if noise_mean:                               # cfg.comb_noise_stat == 'mean'
+            median_noise = (nz_mask.astype(rdt) @ power[:, c0:c1]) / n_nz[:, None].astype(rdt)
+        else:
+            rank = _cp.cumsum(nz_mask[:, order], axis=1, dtype=_cp.int16)  # (n_om, K, C)
+            median_noise = (srt[(rank > lo_i).argmax(axis=1), cols]
+                            + srt[(rank > hi_i).argmax(axis=1), cols]) / 2  # (n_om, C)
+            del rank
         mean_peaks = _cp.where(pk_valid[:, :, None], peak, 0).sum(axis=1) \
             / n_h[:, None].astype(rdt)
         ok = median_noise >= 1e-10
@@ -221,8 +229,12 @@ def _comb_snr_batch_gpu(power, cfg: DDHFConfig, max_cols: int = 50_000,
         arg = snr.argmax(axis=0)
         top = snr[arg, _cp.arange(C)]
         best[c0:c1] = _cp.maximum(top, 0)
-        if return_omega:
+        if best_om is not None:
             best_om[c0:c1] = _cp.where(top > 0, omegas[arg], 0)
+    if sub_reject:                                   # host-side, same code as the CPU path
+        best = _cp.asarray(_subharmonic_reject(
+            _cp.asnumpy(power), _cp.asnumpy(best).astype(np.float64),
+            _cp.asnumpy(best_om), cfg)).astype(rdt)
     if return_omega:
         return best, best_om
     return best
@@ -242,13 +254,14 @@ def _comb_plan(K: int, cfg: DDHFConfig):
     them. omega is carried so callers can recover the winning fundamental."""
     key = (K, cfg.num_harmonics, cfg.min_harmonics, cfg.harmonic_half_width,
            cfg.window_ms, cfg.rotor_bands_hz,
-           getattr(cfg, "noise_band_harmonics", 0.0))
+           getattr(cfg, "noise_band_harmonics", 0.0), _os(cfg))
     plan = _COMB_PLAN_CACHE.get(key)
     if plan is not None:
         return plan
 
     bands  = cfg.rotor_bands_hz
-    bin_hz = 1000.0 / cfg.window_ms
+    bin_hz = _bin_hz(cfg)
+    hw     = cfg.harmonic_half_width * _os(cfg)         # same width in Hz when oversampled
     plan = []
     for omega in range(1, K // cfg.num_harmonics + 1):
         if bands and not any(lo <= omega * bin_hz <= hi for lo, hi in bands):
@@ -260,15 +273,15 @@ def _comb_plan(K: int, cfg: DDHFConfig):
         harmonic_mask = np.zeros(K, dtype=bool)
         peak_slices = []
         for h in harmonics:
-            lo = max(0, h - cfg.harmonic_half_width)
-            hi = min(K - 1, h + cfg.harmonic_half_width)
+            lo = max(0, h - hw)
+            hi = min(K - 1, h + hw)
             peak_slices.append((lo, hi + 1))            # half-open
             harmonic_mask[lo:hi + 1] = True
         noise_mask = ~harmonic_mask
         noise_mask[0] = False
         nbh = getattr(cfg, "noise_band_harmonics", 0.0)
         if nbh > 0:                                  # local noise floor (see utils._comb_snr_batch)
-            band_hi = min(K, int(nbh * harmonics[-1]) + cfg.harmonic_half_width + 1)
+            band_hi = min(K, int(nbh * harmonics[-1]) + hw + 1)
             noise_mask[band_hi:] = False
         if not noise_mask.any():
             continue
@@ -524,7 +537,8 @@ def _spectral_valid_snr(pol_k, tn_k, starts, K, cfg):
     oom_fallback = False
     if _gpu_available():
         try:
-            power_g  = _ndft_power_batch_gpu(pol_k, tn_k, starts, K)
+            power_g  = _ndft_power_batch_gpu(pol_k, tn_k, starts, K,
+                                             k_step=1.0 / _os(cfg))
             valid_g  = _spectral_flatness_batch_gpu(power_g[1:]) <= cfg.tau_sf
             snr_g    = _comb_snr_batch_gpu(power_g, cfg)
             valid_g &= snr_g >= cfg.tau_comb
@@ -540,7 +554,7 @@ def _spectral_valid_snr(pol_k, tn_k, starts, K, cfg):
             oom_fallback = True
     if valid is None:
         _PATH_STATS["cpu_fallback" if oom_fallback else "cpu"] += 1
-        power = _ndft_power_batch(None, pol_k, tn_k, starts, K)
+        power = _ndft_power_batch(None, pol_k, tn_k, starts, K, k_step=1.0 / _os(cfg))
         valid = _spectral_flatness_batch(power[1:]) <= cfg.tau_sf
         snr   = _comb_snr_batch(power, cfg)
         valid &= snr >= cfg.tau_comb

@@ -23,6 +23,7 @@ Usage:
 """
 import os
 import sys
+import json
 import glob
 import argparse
 
@@ -145,6 +146,27 @@ def _case_dir(seq):
     return d if os.path.isdir(d) else None
 
 
+def _wp_data_dir(wp_json):
+    """The feature cache a working point was searched on, from its companion
+    <wp>.search.json (feature_cache.dir, relative to the project root); None
+    when absent, i.e. the default lab/frame_data."""
+    if not wp_json:
+        return None
+    side = os.path.splitext(wp_json)[0] + ".search.json"
+    if not os.path.exists(side):
+        return None
+    try:
+        with open(side, encoding="utf-8") as fh:
+            rel = (json.load(fh).get("feature_cache") or {}).get("dir")
+    except Exception:
+        return None
+    if not rel:
+        return None
+    root = os.path.dirname(_LAB_DIR)
+    d = os.path.normpath(rel if os.path.isabs(rel) else os.path.join(root, rel))
+    return None if d == os.path.normpath(FRAME_DATA) else d
+
+
 def _has_frame_cache(seq, mode, data_dir=None):
     """True when frame_features has cached this run+mode (what --wp replays from)."""
     base = os.path.join(data_dir or FRAME_DATA, f"frames_{seq}_{mode}")
@@ -165,7 +187,8 @@ def _debug_viewer_cmd(seq, meta, wp_json=None):
     if case is None:
         return None
     cmd = [sys.executable, LAB_VIEWER, "--seq", case]   # absolute: wins the join
-    if wp_json and os.path.exists(wp_json) and _has_frame_cache(seq, mode):
+    if wp_json and os.path.exists(wp_json) \
+            and _has_frame_cache(seq, mode, _wp_data_dir(wp_json)):
         return cmd + ["--wp", os.path.abspath(wp_json)]  # faithful replay
     cmd += ["--mode", mode,
             "--min-events", str(int(round(float(p.get("min_events", 4))))),
@@ -177,10 +200,10 @@ def _debug_viewer_cmd(seq, meta, wp_json=None):
     return cmd
 
 
-def _viewer_cmd(seq, meta):
+def _viewer_cmd(seq, meta, wp_json=None):
     """frame_explorer GUI command for `seq` at this working point — the EXACT
-    pipeline the scores came from (cached features from lab/frame_data, full
-    parameter set, including the tracking pass)."""
+    pipeline the scores came from (cached features from lab/frame_data, or the
+    cache its .search.json names, full parameter set, tracking pass included)."""
     p = meta.get("params", {})
 
     def gi(k, dflt):
@@ -191,7 +214,7 @@ def _viewer_cmd(seq, meta):
 
     cmd = [sys.executable, os.path.join(_UTIL_DIR, "frame_explorer.py"),
            "--seq", str(seq), "--mode", meta.get("mode", "baseline"),
-           "--data-dir", FRAME_DATA,
+           "--data-dir", _wp_data_dir(wp_json) or FRAME_DATA,
            "--min-events", gi("min_events", 4),
            "--tau-sf", gf("tau_sf", 0.7),
            "--tau-comb", gf("tau_comb", 3.0),
@@ -867,7 +890,14 @@ def main():
         # case's frame_data cache: build it first when it is missing.
         exact = (V["which"] == "frame_explorer"
                  or (w.get("json") and os.path.exists(w["json"])))
-        if exact and not _has_frame_cache(seq, mode):
+        wp_data = _wp_data_dir(w.get("json"))
+        if exact and not _has_frame_cache(seq, mode, wp_data):
+            if wp_data:                              # not the default cache: the
+                print(f"run {seq}: not in {wp_data} (the cache "   # builder below
+                      f"{w['label']} was searched on) — build it with "  # only makes
+                      "frame_features.py and the options in its "        # default ones
+                      ".search.json", flush=True)
+                return
             _start_build(seq, mode)                  # resumes _launch when done
             return
         cmd = None
@@ -886,7 +916,7 @@ def main():
                       "min_snr_avg / persistence / the tracker are NOT applied)",
                       flush=True)
         if cmd is None:                              # frame_explorer GUI
-            cmd = _viewer_cmd(seq, w["meta"])
+            cmd = _viewer_cmd(seq, w["meta"], wp_json=w.get("json"))
         print("launching:", " ".join(cmd), flush=True)
         import subprocess
         try:

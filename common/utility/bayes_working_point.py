@@ -71,7 +71,7 @@ PERSIST = [(1, 1), (2, 2), (2, 3), (3, 4), (3, 5)]
 # Bounds cover auto_tune's LADDERS; ints round after decoding, heavy-tailed
 # axes search in log space, persist is an ordinal index into PERSIST.
 
-def build_space(track):
+def build_space(track, snr_avg_max=10.0):
     dims = [
         dict(name="min_events",       kind="int",   lo=2,   hi=16),
         dict(name="tau_sf",           kind="float", lo=0.5, hi=0.95),
@@ -80,7 +80,7 @@ def build_space(track):
         dict(name="min_box_area",     kind="int",   lo=1,   hi=300,  log=True),
         dict(name="min_fill_ratio",   kind="float", lo=0.0, hi=0.5),
         dict(name="min_snr_sum",      kind="float", lo=0.0, hi=400.0, log1p=True),
-        dict(name="min_snr_avg",      kind="float", lo=0.0, hi=10.0),
+        dict(name="min_snr_avg",      kind="float", lo=0.0, hi=snr_avg_max),
         dict(name="alpha",            kind="float", lo=1.0, hi=4.0),
         dict(name="persist",          kind="cat",   choices=PERSIST),
     ]
@@ -643,6 +643,9 @@ def main():
                          "TP/(TP+FN) over GT boxes, so BOTH drones must be "
                          "found in the multi-drone cases; 'frames' = GT-frame "
                          "hit rate (any detection in the frame suffices).")
+    ap.add_argument("--snr-avg-max", type=float, default=10.0,
+                    help="Upper end of the min_snr_avg axis (default 10; searched "
+                         "0..this).")
     ap.add_argument("--penalty", type=float, default=3.0,
                     help="Score penalty per unit of constraint violation "
                          "(default 3).")
@@ -685,9 +688,9 @@ def main():
                          "this many (default 6; big speedup on small subsets; "
                          "only applies with --workers 1).")
     ap.add_argument("--workers", type=int,
-                    default=min(4, max(1, (os.cpu_count() or 2) - 1)),
+                    default=min(8, max(1, (os.cpu_count() or 2) - 1)),
                     help="Worker processes evaluating cases in parallel "
-                         "(default: min(4, cores-1)). Concurrency is also "
+                         "(default: min(8, cores-1)). Concurrency is also "
                          "capped by --mem-budget-gb, so big cases serialise "
                          "instead of exhausting RAM. 1 = in-process.")
     ap.add_argument("--mem-budget-gb", type=float, default=None,
@@ -714,7 +717,9 @@ def main():
     if not seqs:
         raise SystemExit("no cached cases found — run frame_features.py first.")
     fp = fingerprint(args, seqs, thr)
-    space = build_space(args.track)
+    if args.snr_avg_max <= 0:
+        raise SystemExit("--snr-avg-max: need > 0")
+    space = build_space(args.track, args.snr_avg_max)
 
     if args.reset and os.path.exists(state):
         os.remove(state)

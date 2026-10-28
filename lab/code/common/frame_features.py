@@ -209,6 +209,36 @@ def main():
     ap.add_argument("--cases-dir", action="append", default=None,
                     help="Dirs of extracted cases to use instead of the defaults "
                          "(lab/runs/dataset).")
+    ap.add_argument("--subharmonic-reject", action="store_true",
+                    help="Reject a pixel when a subharmonic of its comb fundamental, "
+                         "outside the drone bands, has a stronger comb (DDHFConfig."
+                         "subharmonic_reject). Changes snr: write to its own --out-dir.")
+    ap.add_argument("--subharmonic-half-width", type=int, default=1,
+                    help="Harmonic window half-width [bins] for that test (default 1).")
+    ap.add_argument("--subharmonic-min-hz", type=float, default=60.0,
+                    help="Lowest subharmonic tested [Hz] (default 60).")
+    ap.add_argument("--subharmonic-ratio", type=float, default=1.0,
+                    help="Reject when SNR(sub) > ratio x SNR(f0) (default 1 = stronger).")
+    ap.add_argument("--subharmonic-mode", choices=("comb", "between", "peak"), default="comb",
+                    help="How a subharmonic is scored: 'comb' = its comb SNR vs f0's "
+                         "(default); 'between' = mean peak of its lines lying between f0's "
+                         "harmonics vs the mean peak of f0's harmonics; 'peak' = the "
+                         "strongest bin below f0 vs f0's own peak.")
+    ap.add_argument("--subharmonic-min-k", type=int, default=2,
+                    help="Smallest k of the subharmonics f0/k tested (default 2).")
+    ap.add_argument("--subharmonic-excl-hz", type=float, default=30.0,
+                    help="'peak' mode: ignore bins closer than this below f0 (default 30).")
+    ap.add_argument("--subharmonic-skip-bands", choices=("none", "own", "all"), default="none",
+                    help="'peak' mode: also ignore bins inside f0's own drone band ('own') "
+                         "or inside every drone band ('all'). Default none.")
+    ap.add_argument("--comb-noise-stat", choices=("median", "mean"), default="median",
+                    help="Comb SNR noise floor over the non-harmonic bins (DDHFConfig."
+                         "comb_noise_stat). 'mean' changes snr: use its own --out-dir. "
+                         "Default median = the usual cache.")
+    ap.add_argument("--spectral-oversample", type=int, default=1,
+                    help="Evaluate the NDFT n x denser (bins every 1000/(window_ms*n) Hz; "
+                         "DDHFConfig.spectral_oversample). Changes sf/snr: use its own "
+                         "--out-dir. Default 1 = the usual spectrum.")
     args = ap.parse_args()
 
     import ddhf_stats_explorer as EX      # spectral precompute (shares its disk cache)
@@ -233,8 +263,29 @@ def main():
     else:
         seqs = sorted(set(index) | set(CS._local_cases(roots)), key=CS._seq_sort_key)
 
+    # Optional spectral settings (off by default: the cache is then exactly the
+    # usual one). They change the stored snr, so use a separate --out-dir.
+    spectral_ov = {}
+    if args.subharmonic_reject:
+        spectral_ov = dict(subharmonic_reject=True,
+                           subharmonic_half_width=args.subharmonic_half_width,
+                           subharmonic_min_hz=args.subharmonic_min_hz,
+                           subharmonic_ratio=args.subharmonic_ratio)
+        if args.subharmonic_mode != "comb" or args.subharmonic_min_k != 2:
+            spectral_ov.update(subharmonic_mode=args.subharmonic_mode,
+                               subharmonic_min_k=args.subharmonic_min_k)
+        if args.subharmonic_mode == "peak":
+            spectral_ov.update(subharmonic_excl_hz=args.subharmonic_excl_hz,
+                               subharmonic_skip_bands=args.subharmonic_skip_bands)
+    if args.spectral_oversample > 1:
+        spectral_ov["spectral_oversample"] = int(args.spectral_oversample)
+    if args.comb_noise_stat != "median":
+        spectral_ov["comb_noise_stat"] = args.comb_noise_stat
+    variant = EX.feature_variant(EX.build_cfg(**spectral_ov))
+
     B._log(log_path, f"START frame features — mode={args.mode} bands={DRONE} "
-                     f"{len(seqs)} cases -> {args.out_dir}")
+                     f"{len(seqs)} cases -> {args.out_dir}"
+                     + (f" [spectral variant {variant}]" if variant else ""))
 
     n_ok = n_err = n_skip = 0
     for name in seqs:
@@ -250,7 +301,7 @@ def main():
         try:
             case_dir, downloaded = _ensure_case(name, dl, log_path)
             seq_rel = os.path.relpath(case_dir, _CODE_DIR)   # build_dataset resolves vs code/
-            D = EX.build_dataset(seq_rel, args.mode, DRONE, STRIDE, {},
+            D = EX.build_dataset(seq_rel, args.mode, DRONE, STRIDE, spectral_ov,
                                  args.max_frames, args.workers, args.gpu)
             meta = _meta(D)
             n_rows = _write_pixels(D, px_csv, args.min_events_floor,
@@ -260,9 +311,9 @@ def main():
                 json.dump({**meta, "mode": args.mode, "drone": DRONE,
                            "min_events_floor": args.min_events_floor,
                            "sf_max": args.sf_max, "snr_min": args.snr_min,
-                           "pixel_rows": n_rows}, fh, indent=2)
+                           "pixel_rows": n_rows, **spectral_ov}, fh, indent=2)
             if not args.keep_cache:
-                B._safe_remove(EX.features_path(seq_rel, args.mode))
+                B._safe_remove(EX.features_path(seq_rel, args.mode, variant))
             n_ok += 1
             dt = (time.perf_counter() - t0) / 60.0
             B._log(log_path, f"  DONE {name}: {n_rows} pixel-rows over "

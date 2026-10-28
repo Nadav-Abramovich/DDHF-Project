@@ -25,6 +25,12 @@ _PRESET = dict(
     noise_band_harmonics=0.0,   # >0: local noise floor up to C×(top harmonic) (0 = full band)
     harmonic_half_width=3, max_freq_hz=6300.0,
     pixel_block=3,              # pixelization block size BxB (used by pixelize mode)
+    subharmonic_reject=False,   # reject combs that are harmonics of a lower source (off)
+    subharmonic_half_width=1, subharmonic_min_hz=60.0, subharmonic_ratio=1.0,
+    subharmonic_mode="comb", subharmonic_min_k=2,   # 'between' = lines between ω*'s harmonics
+    subharmonic_excl_hz=30.0, subharmonic_skip_bands="none",  # 'peak' mode only
+    comb_noise_stat="median",   # comb SNR noise floor: 'median' (paper) or 'mean'
+    spectral_oversample=1,      # n>1: NDFT bins every 1000/(window_ms*n) Hz (1 = paper)
 )
 
 # CLI flag stem -> (DDHFConfig field, type). window_ms/step_ms are driven by the
@@ -45,6 +51,16 @@ _CFG_CLI_FIELDS = [
     ("harmonic-half-width", "harmonic_half_width", int),
     ("max-freq-hz",         "max_freq_hz",         float),
     ("pixel-block",         "pixel_block",         int),
+    ("subharmonic-reject",      "subharmonic_reject",      int),   # 1 = on
+    ("subharmonic-half-width",  "subharmonic_half_width",  int),
+    ("subharmonic-min-hz",      "subharmonic_min_hz",      float),
+    ("subharmonic-ratio",       "subharmonic_ratio",       float),
+    ("subharmonic-mode",        "subharmonic_mode",        str),   # comb | between | peak
+    ("subharmonic-min-k",       "subharmonic_min_k",       int),
+    ("subharmonic-excl-hz",     "subharmonic_excl_hz",     float), # peak mode
+    ("subharmonic-skip-bands",  "subharmonic_skip_bands",  str),   # peak mode: none | own | all
+    ("spectral-oversample",     "spectral_oversample",     int),
+    ("comb-noise-stat",         "comb_noise_stat",         str),   # median | mean
 ]
 
 
@@ -74,6 +90,15 @@ def format_cfg(cfg):
         f"    noise_band_harmonics={cfg.noise_band_harmonics},",
         f"    harmonic_half_width={cfg.harmonic_half_width}, max_freq_hz={cfg.max_freq_hz},",
         f"    pixel_block={cfg.pixel_block},  # pixelization block size BxB (pixelize mode)",
+        f"    subharmonic_reject={bool(cfg.subharmonic_reject)}, "
+        f"subharmonic_half_width={cfg.subharmonic_half_width}, "
+        f"subharmonic_min_hz={cfg.subharmonic_min_hz}, "
+        f"subharmonic_ratio={cfg.subharmonic_ratio}, "
+        f"subharmonic_mode={cfg.subharmonic_mode!r}, subharmonic_min_k={cfg.subharmonic_min_k},",
+        *([f"    subharmonic_excl_hz={cfg.subharmonic_excl_hz}, "
+           f"subharmonic_skip_bands={cfg.subharmonic_skip_bands!r},"]
+          if cfg.subharmonic_mode == "peak" else []),
+        f"    spectral_oversample={cfg.spectral_oversample}, comb_noise_stat={cfg.comb_noise_stat!r},",
         f"    rotor_bands_hz={cfg.rotor_bands_hz},",
         f"    # derived: frequency_bins K={cfg.frequency_bins}",
         ")",
@@ -221,6 +246,17 @@ def run_param_items(args, mode_tag, cfg):
         ("harmonic_half_width", cfg.harmonic_half_width),
         ("max_freq_hz", cfg.max_freq_hz),
         ("pixel_block", cfg.pixel_block),
+        ("subharmonic_reject", bool(cfg.subharmonic_reject)),
+        ("subharmonic_half_width", cfg.subharmonic_half_width),
+        ("subharmonic_min_hz", cfg.subharmonic_min_hz),
+        ("subharmonic_ratio", cfg.subharmonic_ratio),
+        ("subharmonic_mode", cfg.subharmonic_mode),
+        ("subharmonic_min_k", cfg.subharmonic_min_k),
+        *([("subharmonic_excl_hz", cfg.subharmonic_excl_hz),
+           ("subharmonic_skip_bands", cfg.subharmonic_skip_bands)]
+          if cfg.subharmonic_mode == "peak" else []),
+        ("spectral_oversample", cfg.spectral_oversample),
+        ("comb_noise_stat", cfg.comb_noise_stat),
         ("rotor_bands_hz", rotor_bands_to_cli(cfg.rotor_bands_hz) if cfg.rotor_bands_hz else "(all)"),
         ("frequency_bins_K", cfg.frequency_bins),
     ]

@@ -94,6 +94,17 @@ class DDHFConfig:
     alpha:               float = 2   # α — box-merge join-radius factor (Eq. 12):
                                          #   merge boxes when dist(c1,c2) <
                                          #   α·max(w1,h1,w2,h2). Paper Table 2 value.
+    subharmonic_reject:  bool  = False   # if True: after the comb search, reject a pixel (comb
+                                         #   SNR -> 0) when a subharmonic ω*/k of its winning
+                                         #   fundamental, lying OUTSIDE rotor_bands_hz, has a
+                                         #   stronger comb than ω* itself — i.e. ω* is only a
+                                         #   harmonic of a lower source (fan, mains flicker).
+    subharmonic_half_width: int = 1      # Δk [bins] for that test, used for ω* AND its
+                                         #   subharmonics so the two SNRs are comparable
+                                         #   (subharmonics are fractional bins, e.g. 110 Hz = 3.67).
+    subharmonic_min_hz:  float = 60.0    # lowest subharmonic tested [Hz] (below it the
+                                         #   spectrum is dominated by motion / DC leakage)
+    subharmonic_ratio:   float = 1.0     # reject when SNR(sub) > ratio · SNR(ω*); 1 = "stronger"
 
     @property
     def frequency_bins(self) -> int:
@@ -259,7 +270,8 @@ def _comb_snr_batch(power: np.ndarray, cfg: DDHFConfig,
     """
     K, G = power.shape
     best = np.zeros(G, dtype=np.float64)
-    best_om = np.zeros(G, dtype=np.int64) if return_omega else None
+    sub_reject = getattr(cfg, "subharmonic_reject", False)
+    best_om = np.zeros(G, dtype=np.int64) if (return_omega or sub_reject) else None
 
     bands  = cfg.rotor_bands_hz
     bin_hz = 1000.0 / cfg.window_ms
@@ -327,12 +339,72 @@ def _comb_snr_batch(power: np.ndarray, cfg: DDHFConfig,
 
         better = snr > best
         best[better] = snr[better]
-        if return_omega:
+        if best_om is not None:
             best_om[better] = omega
 
+    if sub_reject:
+        best = _subharmonic_reject(power, best, best_om, cfg)
     if return_omega:
         return best, best_om
     return best
+
+
+def _comb_snr_at(power: np.ndarray, f0: float, num_harmonics: int,
+                 min_harmonics: int, half_width: int) -> np.ndarray:
+    """Comb SNR (same definition as _comb_snr_batch: mean harmonic peak over the
+    median of the non-harmonic, non-DC bins) for ONE fundamental f0 given in
+    bins, which may be fractional; harmonic m sits at round(m·f0) ± half_width.
+    ``power`` is (K, G); returns (G,), 0 where fewer than min_harmonics fit."""
+    K, G = power.shape
+    centres = [int(round(m * f0)) for m in range(1, num_harmonics + 1)]
+    centres = [c for c in centres if 1 <= c < K]
+    if len(centres) < min_harmonics:
+        return np.zeros(G)
+    mask = np.zeros(K, dtype=bool)
+    peaks = []
+    for c in centres:
+        lo = max(1, c - half_width); hi = min(K - 1, c + half_width)
+        peaks.append(power[lo : hi + 1, :].max(axis=0))
+        mask[lo : hi + 1] = True
+    mask[0] = True                                       # DC is never noise
+    if mask.all():
+        return np.zeros(G)
+    med = np.median(power[~mask, :], axis=0)
+    out = np.zeros(G)
+    ok = med >= 1e-10
+    out[ok] = np.mean(np.stack(peaks), axis=0)[ok] / med[ok]
+    return out
+
+
+def _subharmonic_reject(power: np.ndarray, best: np.ndarray,
+                        best_om: np.ndarray, cfg: DDHFConfig) -> np.ndarray:
+    """cfg.subharmonic_reject: zero the comb SNR of every pixel whose winning
+    fundamental ω* is only a harmonic of a lower source. For each subharmonic
+    ω*/k (k = 2, 3, …) at or above subharmonic_min_hz that lies OUTSIDE every
+    rotor band, the comb SNR is measured at ω*/k; if any exceeds
+    subharmonic_ratio × the SNR at ω* (both with subharmonic_half_width), the
+    pixel is rejected. Pixels are grouped by ω*, so the cost is per distinct ω*."""
+    bands  = cfg.rotor_bands_hz
+    bin_hz = 1000.0 / cfg.window_ms
+    M, h_min = cfg.num_harmonics, cfg.min_harmonics
+    dk = int(cfg.subharmonic_half_width)
+    f_min_bins = cfg.subharmonic_min_hz / bin_hz
+    out = best.copy()
+    for om in np.unique(best_om[best_om > 0]):
+        idx = np.flatnonzero((best_om == om) & (best > 0))
+        if idx.size == 0:
+            continue
+        P = power[:, idx]
+        ref = _comb_snr_at(P, float(om), M, h_min, dk)
+        sub = np.zeros(idx.size)
+        k = 2
+        while om / k >= f_min_bins:
+            s = om / k
+            if not (bands and any(lo <= s * bin_hz <= hi for lo, hi in bands)):
+                sub = np.maximum(sub, _comb_snr_at(P, s, M, h_min, dk))
+            k += 1
+        out[idx[sub > cfg.subharmonic_ratio * ref]] = 0.0
+    return out
 
 
 # ── Per-window rotor detection ────────────────────────────────────────────────

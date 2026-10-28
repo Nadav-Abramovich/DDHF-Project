@@ -159,6 +159,7 @@ from utils import (
     _ndft_power_batch,
     _spectral_flatness_batch,
     _comb_snr_batch,
+    _comb_snr_at,
     _normalise_polarity,
     _normalise_timestamps,
     rgb_frame_seconds,
@@ -454,7 +455,38 @@ def best_comb(power, cfg):
         snr = float(np.mean(peaks) / med)
         if snr > best_snr:
             best_snr, best_omega = snr, omega
+    chk = subharmonic_check(power, best_omega, cfg)
+    if chk and chk["rejected"]:                      # matches utils._subharmonic_reject
+        best_snr = 0.0
     return best_omega, best_snr
+
+
+def subharmonic_check(power, omega, cfg):
+    """cfg.subharmonic_reject for ONE pixel's spectrum and its winning comb bin
+    `omega`: the strongest subharmonic outside the drone bands vs the comb at
+    omega, both with subharmonic_half_width (utils._subharmonic_reject's rule).
+    None when the option is off or there is no comb; else a dict with
+    rejected / sub_hz / sub_snr / ref_snr."""
+    if not getattr(cfg, "subharmonic_reject", False) or omega <= 0:
+        return None
+    P = np.asarray(power, dtype=np.float64)[:, None]
+    bands  = cfg.rotor_bands_hz
+    bin_hz = 1000.0 / cfg.window_ms
+    M, h_min = cfg.num_harmonics, cfg.min_harmonics
+    dk = int(cfg.subharmonic_half_width)
+    ref = float(_comb_snr_at(P, float(omega), M, h_min, dk)[0])
+    best_k, best_s = 0, 0.0
+    k = 2
+    while omega / k >= cfg.subharmonic_min_hz / bin_hz:
+        s = omega / k
+        if not (bands and any(lo <= s * bin_hz <= hi for lo, hi in bands)):
+            v = float(_comb_snr_at(P, s, M, h_min, dk)[0])
+            if v > best_s:
+                best_k, best_s = k, v
+        k += 1
+    return dict(rejected=best_s > cfg.subharmonic_ratio * ref,
+                sub_hz=(omega / best_k * bin_hz if best_k else 0.0),
+                sub_snr=best_s, ref_snr=ref)
 
 
 def detect_components_mask(evs, H, W, cfg):
@@ -848,7 +880,42 @@ def _wp_arg_defaults(path):
             d[key] = cast(round(p[key])) if cast is int else cast(p[key])
     if meta.get("mode"):
         d["mode"] = meta["mode"]
+    d.update(_wp_feature_source(path)[1])            # e.g. subharmonic_reject
     return d
+
+
+_SPECTRAL_META_KEYS = ("subharmonic_reject", "subharmonic_half_width",
+                       "subharmonic_min_hz", "subharmonic_ratio")
+
+
+def _wp_feature_source(wp_path):
+    """(data_dir, spectral) for a working point. Its companion
+    <wp>.search.json records the feature cache it was searched on
+    (feature_cache.dir, relative to the project root); that folder's meta_*.json
+    record the optional spectral settings it was built with (e.g.
+    subharmonic_reject). Returns (None, {}) when there is no companion file or
+    it names the default cache, so older working points replay as before."""
+    import json
+    import glob
+    side = os.path.splitext(wp_path)[0] + ".search.json"
+    if not os.path.exists(side):
+        return None, {}
+    try:
+        with open(side, encoding="utf-8") as fh:
+            rel = (json.load(fh).get("feature_cache") or {}).get("dir")
+    except Exception:
+        return None, {}
+    if not rel:
+        return None, {}
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    d = os.path.normpath(rel if os.path.isabs(rel) else os.path.join(root, rel))
+    spectral = {}
+    for m in sorted(glob.glob(os.path.join(d, "meta_*.json")))[:1]:
+        with open(m, encoding="utf-8") as fh:
+            mm = json.load(fh)
+        spectral = {k: (int(mm[k]) if k == "subharmonic_reject" else mm[k])
+                    for k in _SPECTRAL_META_KEYS if k in mm}
+    return d, spectral
 
 
 def _wp_replay(wp_path, seq, data_dir=None):
@@ -1175,8 +1242,13 @@ def main():
     # drawn is what the working point scored.
     wp_dets = wp_pass = None
     if args.wp:
+        wp_data, wp_spectral = _wp_feature_source(args.wp)
+        if wp_data:
+            print(f"[wp] features: {wp_data}"
+                  + (f"  ({', '.join(f'{k}={v}' for k, v in wp_spectral.items())})"
+                     if wp_spectral else ""))
         print(f"[wp] replaying {os.path.basename(args.wp)} through frame_explorer ...")
-        wp_dets, wp_pass, wp_meta = _wp_replay(args.wp, args.seq)
+        wp_dets, wp_pass, wp_meta = _wp_replay(args.wp, args.seq, wp_data)
         n_box = sum(len(v) for v in wp_dets.values())
         print(f"[wp] {n_box} detections over {len(wp_dets)} frames "
               f"[{wp_meta.get('mode')}"
@@ -1535,9 +1607,21 @@ def main():
                 verdict = (f"COMB: f0~{fund:.0f}Hz (bin {omega})" if significant else
                            f"NO significant comb — best ~{fund:.0f}Hz "
                            f"(SNR {snr_best:.1f} < {args.snr_sig:g})")
+                chk = subharmonic_check(power, omega, cfg)
+                sub_s = ""
+                if chk is not None:
+                    if chk["sub_hz"] > 0:
+                        ax_spec.axvline(chk["sub_hz"], color="purple", ls=":", lw=1.5,
+                                        alpha=0.9, label=f"subharmonic {chk['sub_hz']:.0f} Hz")
+                        ax_spec.legend(loc="upper right", fontsize=7)
+                    sub_s = (f"\nsubharmonic {chk['sub_hz']:.0f}Hz SNR {chk['sub_snr']:.2f} "
+                             f"{'>' if chk['rejected'] else '<='} "
+                             f"{cfg.subharmonic_ratio:g}x f0 SNR {chk['ref_snr']:.2f} "
+                             f"(±{cfg.subharmonic_half_width} bin)"
+                             f" -> {'REJECTED' if chk['rejected'] else 'kept'}")
                 ax_spec.text(
                     0.01, 0.97,
-                    f"{verdict}\ncomb SNR = {snr_best:.2f}\nSF = {sf_s}",
+                    f"{verdict}\ncomb SNR = {snr_best:.2f}\nSF = {sf_s}{sub_s}",
                     transform=ax_spec.transAxes, ha="left", va="top",
                     family="monospace", fontsize=7,
                     bbox=dict(boxstyle="round",
@@ -1747,9 +1831,13 @@ def main():
                                         label=(f"f0={fh:.0f} Hz" if m == 1 else None))
                 ax_spec.legend(loc="upper right", fontsize=7)
             verdict = "PASS" if (sf <= cfg.tau_sf and snr >= cfg.tau_comb) else "FAIL"
+            chk = subharmonic_check(power, omega, cfg)
+            sub_s = ""
+            if chk is not None and chk["rejected"]:
+                sub_s = f"   [subharmonic {chk['sub_hz']:.0f} Hz stronger: REJECTED]"
             ax_spec.set_title(f"GT-BOX pooled spectrum — {n} ev   "
                               f"comb SNR={snr:.2f} (>= {cfg.tau_comb})   "
-                              f"SF={sf:.3f} (<= {cfg.tau_sf})   -> {verdict}")
+                              f"SF={sf:.3f} (<= {cfg.tau_sf})   -> {verdict}{sub_s}")
         ax_spec.set_visible(True)
         fig.canvas.draw_idle()
 

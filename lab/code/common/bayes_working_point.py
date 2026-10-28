@@ -669,9 +669,9 @@ def main():
                          "this many (default 6; big speedup on small subsets; "
                          "only applies with --workers 1).")
     ap.add_argument("--workers", type=int,
-                    default=min(4, max(1, (os.cpu_count() or 2) - 1)),
+                    default=min(8, max(1, (os.cpu_count() or 2) - 1)),
                     help="Worker processes evaluating cases in parallel "
-                         "(default: min(4, cores-1)). Concurrency is also "
+                         "(default: min(8, cores-1)). Concurrency is also "
                          "capped by --mem-budget-gb, so big cases serialise "
                          "instead of exhausting RAM. 1 = in-process.")
     ap.add_argument("--mem-budget-gb", type=float, default=None,

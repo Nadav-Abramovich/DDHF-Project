@@ -29,6 +29,7 @@ from scipy import ndimage as _ndi
 from utils import (
     DDHFConfig, BoundingBox, DDHF,
     _ndft_power_batch, _spectral_flatness_batch, _comb_snr_batch,
+    _subharmonic_reject,
     _extract_boxes as _extract_boxes_ref, _merge_boxes,
     _detect_rotor_pixels as _detect_rotor_pixels_plain,
     _normalise_polarity, _normalise_timestamps,
@@ -166,14 +167,16 @@ def _comb_snr_batch_gpu(power, cfg: DDHFConfig, max_cols: int = 50_000,
     bit-identical to the unchunked version regardless of block size."""
     K, G = power.shape
     rdt = power.dtype
+    sub_reject = getattr(cfg, "subharmonic_reject", False)
+    want_om = return_omega or sub_reject
     best = _cp.zeros(G, dtype=rdt)
-    best_om = _cp.zeros(G, dtype=_cp.int64) if return_omega else None
+    best_om = _cp.zeros(G, dtype=_cp.int64) if want_om else None
     plan = _comb_plan(K, cfg)
     for c0 in range(0, G, max_cols):
         c1 = min(c0 + max_cols, G)
         pblock = power[:, c0:c1]
         bblock = _cp.zeros(c1 - c0, dtype=rdt)
-        bomblock = _cp.zeros(c1 - c0, dtype=_cp.int64) if return_omega else None
+        bomblock = _cp.zeros(c1 - c0, dtype=_cp.int64) if want_om else None
         for omega, noise_idx, peak_slices in plan:
             peak_powers = [pblock[lo:hi, :].max(axis=0) for lo, hi in peak_slices]
             noise = pblock[noise_idx, :]
@@ -195,11 +198,15 @@ def _comb_snr_batch_gpu(power, cfg: DDHFConfig, max_cols: int = 50_000,
 
             better = snr > bblock
             bblock[better] = snr[better]
-            if return_omega:
+            if want_om:
                 bomblock[better] = omega
         best[c0:c1] = bblock
-        if return_omega:
+        if want_om:
             best_om[c0:c1] = bomblock
+    if sub_reject:                                   # host-side, same code as the CPU path
+        best = _cp.asarray(_subharmonic_reject(
+            _cp.asnumpy(power), _cp.asnumpy(best).astype(np.float64),
+            _cp.asnumpy(best_om), cfg)).astype(rdt)
     if return_omega:
         return best, best_om
     return best

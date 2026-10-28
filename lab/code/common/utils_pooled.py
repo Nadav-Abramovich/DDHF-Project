@@ -29,6 +29,7 @@ from scipy import ndimage as _ndi
 from utils import (
     DDHFConfig, BoundingBox, DDHF,
     _ndft_power_batch, _spectral_flatness_batch, _comb_snr_batch,
+    _subharmonic_reject, _os, _bin_hz,
     _extract_boxes as _extract_boxes_ref, _merge_boxes,
     _detect_rotor_pixels as _detect_rotor_pixels_plain,
     _normalise_polarity, _normalise_timestamps,
@@ -103,7 +104,7 @@ def _gpu_available() -> bool:
 
 
 def _ndft_power_batch_gpu(pol_sorted, tn_sorted, group_starts, K,
-                          max_chunk_elems: int = 32_000_000):
+                          max_chunk_elems: int = 32_000_000, k_step: float = 1.0):
     """GPU twin of utils._ndft_power_batch. Returns a CuPy (K, G) power array.
 
     Same chunked construction of the (K, n_e) phasor matrix and the same
@@ -115,6 +116,8 @@ def _ndft_power_batch_gpu(pol_sorted, tn_sorted, group_starts, K,
     pol_g = _cp.asarray(pol_sorted, dtype=rdt)
     tn_g  = _cp.asarray(tn_sorted,  dtype=rdt)
     k     = _cp.arange(K, dtype=rdt)
+    if k_step != 1.0:                                   # fractional k (spectral_oversample)
+        k = k * k_step
     power = _cp.empty((K, G), dtype=rdt)
 
     gs = np.asarray(group_starts)                       # host: chunk bookkeeping
@@ -166,18 +169,22 @@ def _comb_snr_batch_gpu(power, cfg: DDHFConfig, max_cols: int = 50_000,
     bit-identical to the unchunked version regardless of block size."""
     K, G = power.shape
     rdt = power.dtype
+    sub_reject = getattr(cfg, "subharmonic_reject", False)
+    want_om = return_omega or sub_reject
     best = _cp.zeros(G, dtype=rdt)
-    best_om = _cp.zeros(G, dtype=_cp.int64) if return_omega else None
+    best_om = _cp.zeros(G, dtype=_cp.int64) if want_om else None
     plan = _comb_plan(K, cfg)
+    noise_mean = getattr(cfg, "comb_noise_stat", "median") == "mean"
     for c0 in range(0, G, max_cols):
         c1 = min(c0 + max_cols, G)
         pblock = power[:, c0:c1]
         bblock = _cp.zeros(c1 - c0, dtype=rdt)
-        bomblock = _cp.zeros(c1 - c0, dtype=_cp.int64) if return_omega else None
+        bomblock = _cp.zeros(c1 - c0, dtype=_cp.int64) if want_om else None
         for omega, noise_idx, peak_slices in plan:
             peak_powers = [pblock[lo:hi, :].max(axis=0) for lo, hi in peak_slices]
             noise = pblock[noise_idx, :]
-            median_noise = _cp.median(noise, axis=0)
+            median_noise = (noise.mean(axis=0) if noise_mean
+                            else _cp.median(noise, axis=0))
             mean_peaks = _cp.mean(_cp.stack(peak_powers, axis=0), axis=0)
             snr = _cp.zeros(c1 - c0, dtype=rdt)
             ok = median_noise >= 1e-10
@@ -195,11 +202,15 @@ def _comb_snr_batch_gpu(power, cfg: DDHFConfig, max_cols: int = 50_000,
 
             better = snr > bblock
             bblock[better] = snr[better]
-            if return_omega:
+            if want_om:
                 bomblock[better] = omega
         best[c0:c1] = bblock
-        if return_omega:
+        if want_om:
             best_om[c0:c1] = bomblock
+    if sub_reject:                                   # host-side, same code as the CPU path
+        best = _cp.asarray(_subharmonic_reject(
+            _cp.asnumpy(power), _cp.asnumpy(best).astype(np.float64),
+            _cp.asnumpy(best_om), cfg)).astype(rdt)
     if return_omega:
         return best, best_om
     return best
@@ -219,13 +230,14 @@ def _comb_plan(K: int, cfg: DDHFConfig):
     them. omega is carried so callers can recover the winning fundamental."""
     key = (K, cfg.num_harmonics, cfg.min_harmonics, cfg.harmonic_half_width,
            cfg.window_ms, cfg.rotor_bands_hz,
-           getattr(cfg, "noise_band_harmonics", 0.0))
+           getattr(cfg, "noise_band_harmonics", 0.0), _os(cfg))
     plan = _COMB_PLAN_CACHE.get(key)
     if plan is not None:
         return plan
 
     bands  = cfg.rotor_bands_hz
-    bin_hz = 1000.0 / cfg.window_ms
+    bin_hz = _bin_hz(cfg)
+    hw     = cfg.harmonic_half_width * _os(cfg)         # same width in Hz when oversampled
     plan = []
     for omega in range(1, K // cfg.num_harmonics + 1):
         if bands and not any(lo <= omega * bin_hz <= hi for lo, hi in bands):
@@ -237,15 +249,15 @@ def _comb_plan(K: int, cfg: DDHFConfig):
         harmonic_mask = np.zeros(K, dtype=bool)
         peak_slices = []
         for h in harmonics:
-            lo = max(0, h - cfg.harmonic_half_width)
-            hi = min(K - 1, h + cfg.harmonic_half_width)
+            lo = max(0, h - hw)
+            hi = min(K - 1, h + hw)
             peak_slices.append((lo, hi + 1))            # half-open
             harmonic_mask[lo:hi + 1] = True
         noise_mask = ~harmonic_mask
         noise_mask[0] = False
         nbh = getattr(cfg, "noise_band_harmonics", 0.0)
         if nbh > 0:                                  # local noise floor (see utils._comb_snr_batch)
-            band_hi = min(K, int(nbh * harmonics[-1]) + cfg.harmonic_half_width + 1)
+            band_hi = min(K, int(nbh * harmonics[-1]) + hw + 1)
             noise_mask[band_hi:] = False
         if not noise_mask.any():
             continue
@@ -467,7 +479,8 @@ def _spectral_valid_snr(pol_k, tn_k, starts, K, cfg):
     oom_fallback = False
     if _gpu_available():
         try:
-            power_g  = _ndft_power_batch_gpu(pol_k, tn_k, starts, K)
+            power_g  = _ndft_power_batch_gpu(pol_k, tn_k, starts, K,
+                                             k_step=1.0 / _os(cfg))
             valid_g  = _spectral_flatness_batch_gpu(power_g[1:]) <= cfg.tau_sf
             snr_g    = _comb_snr_batch_gpu(power_g, cfg)
             valid_g &= snr_g >= cfg.tau_comb
@@ -483,7 +496,7 @@ def _spectral_valid_snr(pol_k, tn_k, starts, K, cfg):
             oom_fallback = True
     if valid is None:
         _PATH_STATS["cpu_fallback" if oom_fallback else "cpu"] += 1
-        power = _ndft_power_batch(None, pol_k, tn_k, starts, K)
+        power = _ndft_power_batch(None, pol_k, tn_k, starts, K, k_step=1.0 / _os(cfg))
         valid = _spectral_flatness_batch(power[1:]) <= cfg.tau_sf
         snr   = _comb_snr_batch(power, cfg)
         valid &= snr >= cfg.tau_comb

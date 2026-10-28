@@ -517,16 +517,25 @@ def cache_dir():
     os.makedirs(d, exist_ok=True)
     return d
 
-def features_path(seq, mode):
+def features_path(seq, mode, variant=""):
     """Stable, descriptive per-(data-folder, mode) feature file in code/cache/.
     The name encodes the dataset and the data-folder number so it's obvious what
     each cache is, e.g.  features_cases_46_baseline.npz. This is BOTH
     the explorer's cache and the file ddhf_svm_explorer.py loads; it is refreshed
-    whenever the structural params change."""
+    whenever the structural params change. `variant` (see feature_variant) keeps
+    optional spectral settings in their own file instead of overwriting this one."""
     ap = os.path.abspath(seq_dir(seq)).rstrip("/\\")
     seqbase = os.path.basename(ap) or "seq"
     dataset = os.path.basename(os.path.dirname(ap)) or "data"
-    return os.path.join(cache_dir(), f"features_{dataset}_{seqbase}_{mode}.npz")
+    return os.path.join(cache_dir(), f"features_{dataset}_{seqbase}_{mode}{variant}.npz")
+
+def feature_variant(cfg):
+    """File-name suffix for optional spectral settings ('' when all are off, so
+    existing feature files keep their names and keys)."""
+    if not getattr(cfg, "subharmonic_reject", False):
+        return ""
+    return (f"_subharm{cfg.subharmonic_half_width}_{cfg.subharmonic_min_hz:g}"
+            f"_{cfg.subharmonic_ratio:g}")
 
 FEATURES_VERSION = 2          # bump when the stored columns change (forces recompute)
 
@@ -535,7 +544,7 @@ def _cache_key(seq, mode, drone, stride, cfg, n_scan):
         f"v{FEATURES_VERSION}", seq, mode, cfg.window_ms, cfg.pixel_block, drone, stride,
         cfg.num_harmonics, cfg.min_harmonics, cfg.harmonic_half_width, cfg.max_freq_hz,
         cfg.noise_band_harmonics, cfg.min_present_harmonics, cfg.harmonic_present_factor,
-        PRECOMPUTE_MIN_EVENTS, n_scan))
+        PRECOMPUTE_MIN_EVENTS, n_scan)) + feature_variant(cfg)
 
 def _save_cache(path, D, key, meta):
     np.savez_compressed(path, key=key,
@@ -586,7 +595,7 @@ def build_dataset(seq, mode, drone, stride, overrides, n_scan_cap, workers, gpu,
     n_scan = max_idx if n_scan_cap is None else min(max_idx, n_scan_cap)
 
     key = _cache_key(seq, mode, drone, stride, cfg, n_scan)
-    cache = features_path(seq, mode)
+    cache = features_path(seq, mode, feature_variant(cfg))
     if not refresh and os.path.exists(cache):
         try:
             z = np.load(cache, allow_pickle=False)
