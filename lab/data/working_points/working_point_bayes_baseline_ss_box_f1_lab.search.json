@@ -1,0 +1,37 @@
+{
+  "kind": "FRED working point evaluated on the lab recordings",
+  "working_point": "lab/data/working_points/working_point_bayes_baseline_ss_box_f1_lab.json",
+  "command": "lab_eval.py --tag baseline_ss_box_f1 --objective f1 --agg mean --min-gtf 0 --recall-level box --penalty 3",
+  "argv": [
+    "lab_eval.py",
+    "--tag",
+    "baseline_ss_box_f1",
+    "--objective",
+    "f1",
+    "--agg",
+    "mean",
+    "--min-gtf",
+    "0",
+    "--recall-level",
+    "box",
+    "--penalty",
+    "3"
+  ],
+  "code_commit": "1df34f2",
+  "notes": [
+    "Evaluates fred/data/working_points/working_point_bayes_baseline_ss_box_f1.json unchanged (no search, no re-tuning) on all 10 lab recordings, with the lab copy of the pipeline (lab/code/lab_bayes_working_point.py evaluate_point / metrics_from_rows / score_of / write_best), mode=baseline, tracking off.",
+    "Data: lab/frame_data per-pixel files frames_<rec>_baseline.csv.gz, built with lab/code/common/frame_features.py --mode baseline (default settings, drone bands 'all', min_present_harmonics 0, as in the FRED caches).",
+    "Scored with the objective of its FRED search (mean box-level F1, no recall floor). No skip-start: lab recordings have no lead-in, so whole recordings count. Lab camera is 640x480 vs FRED 1280x720; pixel-based parameters (min_rotor_pixels, min_box_area, alpha) are applied unchanged."
+  ],
+  "feature_cache": {
+    "dir": "lab/frame_data",
+    "settings": {
+      "mode": "baseline",
+      "drone": "all",
+      "min_events_floor": 3,
+      "sf_max": 0.9,
+      "snr_min": 1.5,
+      "window_ms": 33.333
+    }
+  }
+}

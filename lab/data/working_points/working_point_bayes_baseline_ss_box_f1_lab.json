@@ -1,0 +1,59 @@
+{
+  "params": {
+    "min_events": 2,
+    "tau_sf": 0.8259,
+    "tau_comb": 2.0,
+    "min_rotor_pixels": 10,
+    "min_box_area": 8,
+    "min_fill_ratio": 0.0,
+    "min_snr_sum": 0.6077,
+    "min_snr_avg": 3.9765,
+    "alpha": 1.7343,
+    "persist_m": 1,
+    "persist_k": 1
+  },
+  "metrics": {
+    "tp": 6927,
+    "fp": 4717,
+    "fn": 4937,
+    "precision": 0.5949,
+    "precision_mean": 0.593,
+    "precision_min": 0.1464,
+    "recall": 0.5839,
+    "f1": 0.5893,
+    "f1_mean": 0.5855,
+    "f1_min": 0.1795,
+    "f1_frames": 0.6199,
+    "precision_frames": 0.6015,
+    "gtf_hit_rate": 0.6394,
+    "fp_per_frame": 0.3912
+  },
+  "score": 0.5855,
+  "objective": {
+    "name": "f1",
+    "agg": "mean",
+    "min_recall": 0.0,
+    "recall_level": "box",
+    "penalty": 3.0,
+    "max_fppf": null
+  },
+  "cases": [
+    "rec_20260927_132735_in_place",
+    "rec_20260927_132804_right_left",
+    "rec_20260927_132904_close_far",
+    "rec_20260927_135010_blinking_led",
+    "rec_20260927_135102_person_walking",
+    "rec_20260927_151030_two_drones",
+    "rec_20260927_151507_light_changes",
+    "rec_20260927_154025_outside",
+    "rec_20260927_154433_outside_anther_walk",
+    "rec_20260927_160032_with_fan"
+  ],
+  "mode": "baseline",
+  "match": "center",
+  "match_thr": 1.0,
+  "track": false,
+  "track_sigma": 20.0,
+  "skip_start": false,
+  "n_evals": 0
+}
