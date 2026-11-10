@@ -122,6 +122,12 @@ class DDHFConfig:
                                          #   subharmonic_half_width) scale by n so they keep their
                                          #   width in Hz. Sampling only: the window still blurs lines
                                          #   closer than ~1000/window_ms Hz. 1 = paper behaviour.
+    low_cut_hz:          float = 0.0     # >0: zero the NDFT bins below this frequency [Hz] right
+                                         #   after the transform, and leave them out of the
+                                         #   spectral-flatness sum and of every comb noise floor
+                                         #   (as the DC bin already is), so low-frequency motion
+                                         #   / DC leakage cannot win a (subharmonic) comb window.
+                                         #   0 = paper behaviour.
 
     @property
     def frequency_bins(self) -> int:
@@ -143,6 +149,25 @@ def _os(cfg) -> int:
 def _bin_hz(cfg) -> float:
     """Spacing of the NDFT bins in Hz: 1000/window_ms, divided by the oversampling."""
     return 1000.0 / cfg.window_ms / _os(cfg)
+
+
+def _low_cut_bins(cfg) -> int:
+    """Number of leading NDFT bins below cfg.low_cut_hz (0 when the cut is off)."""
+    hz = float(getattr(cfg, "low_cut_hz", 0.0) or 0.0)
+    return int(np.ceil(hz / _bin_hz(cfg) - 1e-9)) if hz > 0 else 0
+
+
+def _sf_start(cfg) -> int:
+    """First bin of the spectral-flatness sum: 1 (skip DC), or past the low cut."""
+    return max(1, _low_cut_bins(cfg))
+
+
+def _apply_low_cut(power, cfg):
+    """Zero the bins below cfg.low_cut_hz in place (no-op when off); returns power."""
+    n = _low_cut_bins(cfg)
+    if n:
+        power[:n] = 0
+    return power
 
 
 _DEFAULT = DDHFConfig()
@@ -331,6 +356,7 @@ def _comb_snr_batch(power: np.ndarray, cfg: DDHFConfig,
         # part of the rotor comb, so leaving it in would inflate the floor.
         noise_mask = ~harmonic_mask
         noise_mask[0] = False
+        noise_mask[:_low_cut_bins(cfg)] = False             # cfg.low_cut_hz: not noise either
         # Optional LOCAL noise floor: restrict the complement to bins up to
         # noise_band_harmonics × the top harmonic, so the floor is measured near
         # the comb and doesn't depend on the arbitrary spectrum length K.
@@ -382,10 +408,11 @@ def _comb_snr_batch(power: np.ndarray, cfg: DDHFConfig,
 
 
 def _comb_snr_at(power: np.ndarray, f0: float, num_harmonics: int,
-                 min_harmonics: int, half_width: int) -> np.ndarray:
+                 min_harmonics: int, half_width: int, low_cut: int = 0) -> np.ndarray:
     """Comb SNR (same definition as _comb_snr_batch: mean harmonic peak over the
     median of the non-harmonic, non-DC bins) for ONE fundamental f0 given in
     bins, which may be fractional; harmonic m sits at round(m·f0) ± half_width.
+    The first ``low_cut`` bins (cfg.low_cut_hz) are not noise either.
     ``power`` is (K, G); returns (G,), 0 where fewer than min_harmonics fit."""
     K, G = power.shape
     centres = [int(round(m * f0)) for m in range(1, num_harmonics + 1)]
@@ -398,7 +425,7 @@ def _comb_snr_at(power: np.ndarray, f0: float, num_harmonics: int,
         lo = max(1, c - half_width); hi = min(K - 1, c + half_width)
         peaks.append(power[lo : hi + 1, :].max(axis=0))
         mask[lo : hi + 1] = True
-    mask[0] = True                                       # DC is never noise
+    mask[:max(1, low_cut)] = True                        # DC (and the low cut) is never noise
     if mask.all():
         return np.zeros(G)
     med = np.median(power[~mask, :], axis=0)
@@ -437,6 +464,7 @@ def _subharmonic_reject(power: np.ndarray, best: np.ndarray,
     f_min_bins = cfg.subharmonic_min_hz / bin_hz
     between = getattr(cfg, "subharmonic_mode", "comb") == "between"
     k_min = max(2, int(getattr(cfg, "subharmonic_min_k", 2)))
+    n_cut = _low_cut_bins(cfg)
     out = best.copy()
     for om in np.unique(best_om[best_om > 0]):
         idx = np.flatnonzero((best_om == om) & (best > 0))
@@ -448,14 +476,14 @@ def _subharmonic_reject(power: np.ndarray, best: np.ndarray,
             ref = np.mean([P[max(1, c - hw): c + hw + 1, :].max(axis=0)
                            for c in range(om, M * om + 1, om) if c < P.shape[0]], axis=0)
         else:
-            ref = _comb_snr_at(P, float(om), M, h_min, dk)
+            ref = _comb_snr_at(P, float(om), M, h_min, dk, n_cut)
         sub = np.zeros(idx.size)
         k = k_min
         while om / k >= f_min_bins:
             s = om / k
             if not (bands and any(lo <= s * bin_hz <= hi for lo, hi in bands)):
                 sub = np.maximum(sub, _between_peak(P, s, k, M, dk, f_min_bins) if between
-                                 else _comb_snr_at(P, s, M, h_min, dk))
+                                 else _comb_snr_at(P, s, M, h_min, dk, n_cut))
             k += 1
         out[idx[sub > cfg.subharmonic_ratio * ref]] = 0.0
     return out
@@ -518,6 +546,7 @@ def _detect_rotor_pixels(
     # Vectorised NDFT power spectra for the surviving pixel groups: (K, G)
     power = _ndft_power_batch(None, pol_k, tn_k, starts, cfg.frequency_bins,
                               k_step=1.0 / _os(cfg))
+    _apply_low_cut(power, cfg)
 
     # Pixel coordinates of each surviving group.
     grp_pid = pid_k[starts]
@@ -525,7 +554,7 @@ def _detect_rotor_pixels(
     px = grp_pid % width
 
     # Apply the remaining acceptance criteria pixel-wise (all evaluated as arrays).
-    valid  = _spectral_flatness_batch(power[1:]) <= cfg.tau_sf              # skip DC bin
+    valid  = _spectral_flatness_batch(power[_sf_start(cfg):]) <= cfg.tau_sf  # skip DC bin
     if return_freq:
         snr, omega = _comb_snr_batch(power, cfg, return_omega=True)
     else:

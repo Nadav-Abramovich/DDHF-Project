@@ -29,7 +29,7 @@ from scipy import ndimage as _ndi
 from utils import (
     DDHFConfig, BoundingBox, DDHF,
     _ndft_power_batch, _spectral_flatness_batch, _comb_snr_batch,
-    _subharmonic_reject, _os, _bin_hz,
+    _subharmonic_reject, _os, _bin_hz, _low_cut_bins, _sf_start, _apply_low_cut,
     _extract_boxes as _extract_boxes_ref, _merge_boxes,
     _detect_rotor_pixels as _detect_rotor_pixels_plain,
     _normalise_polarity, _normalise_timestamps,
@@ -535,7 +535,7 @@ def _spectral_valid_snr(pol_k, tn_k, starts, K, cfg):
     order. Per-window GPU/CPU path is recorded in _PATH_STATS."""
     snr = valid = None
     oom_fallback = False
-    if _gpu_available():
+    if _gpu_available() and not _low_cut_bins(cfg):       # low cut: CPU path only
         try:
             power_g  = _ndft_power_batch_gpu(pol_k, tn_k, starts, K,
                                              k_step=1.0 / _os(cfg))
@@ -554,8 +554,9 @@ def _spectral_valid_snr(pol_k, tn_k, starts, K, cfg):
             oom_fallback = True
     if valid is None:
         _PATH_STATS["cpu_fallback" if oom_fallback else "cpu"] += 1
-        power = _ndft_power_batch(None, pol_k, tn_k, starts, K, k_step=1.0 / _os(cfg))
-        valid = _spectral_flatness_batch(power[1:]) <= cfg.tau_sf
+        power = _apply_low_cut(_ndft_power_batch(None, pol_k, tn_k, starts, K,
+                                                 k_step=1.0 / _os(cfg)), cfg)
+        valid = _spectral_flatness_batch(power[_sf_start(cfg):]) <= cfg.tau_sf
         snr   = _comb_snr_batch(power, cfg)
         valid &= snr >= cfg.tau_comb
     return valid, snr

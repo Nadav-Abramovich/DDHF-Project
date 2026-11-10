@@ -162,7 +162,7 @@ from utils import (
     _normalise_polarity,
     _normalise_timestamps,
     rgb_frame_seconds,
-    _os, _bin_hz,
+    _os, _bin_hz, _low_cut_bins, _sf_start, _apply_low_cut,
 )
 try:
     from scipy.ndimage import label as _scipy_label
@@ -364,7 +364,7 @@ def compute_pixel_stats(evs, ev_height, ev_width, cfg):
             raise RuntimeError("DDHF_GPU_FUSED=1 but the GPU is unavailable or the "
                                "configuration is not supported by gpu_fused")
         sf, snr, omega = gpu_fused.fused_stats(pol_k, tn_k, starts, cfg)
-    elif _USE_GPU and _gpu_available():
+    elif _USE_GPU and _gpu_available() and not _low_cut_bins(cfg):   # low cut: CPU / fused only
         # Exact GPU detection path used by ddhf_eval_pooled (fp32 by default, set
         # DDHF_GPU_FP32=0 for fp64). Falls back to CPU for this frame on OOM.
         try:
@@ -380,8 +380,9 @@ def compute_pixel_stats(evs, ev_height, ev_width, cfg):
             sf = snr = omega = None
 
     if sf is None:
-        power      = _ndft_power_batch(None, pol_k, tn_k, starts, K, k_step=1.0 / _os(cfg))
-        sf         = _spectral_flatness_batch(power[1:])
+        power      = _apply_low_cut(_ndft_power_batch(None, pol_k, tn_k, starts, K,
+                                                      k_step=1.0 / _os(cfg)), cfg)
+        sf         = _spectral_flatness_batch(power[_sf_start(cfg):])
         snr, omega = _comb_snr_batch(power, cfg, return_omega=True)
 
     bpid = pid_k[starts]

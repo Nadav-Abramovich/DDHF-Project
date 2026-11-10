@@ -99,7 +99,7 @@ def _batch_spectral(pol_k, tn_k, starts, cfg):
     """Per-group (SF, comb-SNR) via the batch NDFT, on GPU when dv._USE_GPU and a
     GPU is available, else CPU. Same spectral path compute_pixel_stats uses."""
     K = cfg.frequency_bins
-    if dv._USE_GPU and dv._gpu_available():
+    if dv._USE_GPU and dv._gpu_available() and not dv._low_cut_bins(cfg):   # low cut: CPU only
         try:
             power_g = dv._ndft_power_batch_gpu(pol_k, tn_k, starts, K, k_step=1.0 / dv._os(cfg))
             sf_g = dv._spectral_flatness_batch_gpu(power_g[1:])
@@ -108,8 +108,9 @@ def _batch_spectral(pol_k, tn_k, starts, cfg):
         except Exception:
             try: dv._cp.get_default_memory_pool().free_all_blocks()
             except Exception: pass
-    power = dv._ndft_power_batch(None, pol_k, tn_k, starts, K, k_step=1.0 / dv._os(cfg))
-    sf = dv._spectral_flatness_batch(power[1:])
+    power = dv._apply_low_cut(dv._ndft_power_batch(None, pol_k, tn_k, starts, K,
+                                                   k_step=1.0 / dv._os(cfg)), cfg)
+    sf = dv._spectral_flatness_batch(power[dv._sf_start(cfg):])
     snr, _ = dv._comb_snr_batch(power, cfg, return_omega=True)
     return sf, snr
 
@@ -535,6 +536,8 @@ def feature_variant(cfg):
         v += f"_noise{cfg.comb_noise_stat}"
     if int(getattr(cfg, "spectral_oversample", 1)) > 1:
         v += f"_os{int(cfg.spectral_oversample)}"
+    if float(getattr(cfg, "low_cut_hz", 0.0) or 0.0) > 0:
+        v += f"_lowcut{cfg.low_cut_hz:g}"
     return v
 
 FEATURES_VERSION = 2          # bump when the stored columns change (forces recompute)

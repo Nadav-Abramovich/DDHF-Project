@@ -259,6 +259,11 @@ def main():
                     help="Evaluate the NDFT n x denser (bins every 1000/(window_ms*n) Hz; "
                          "DDHFConfig.spectral_oversample). Changes sf/snr: use its own "
                          "--out-dir. Default 1 = the usual spectrum.")
+    ap.add_argument("--low-cut-hz", type=float, default=0.0,
+                    help="Zero the NDFT bins below this frequency [Hz] before the SF / comb / "
+                         "subharmonic tests, and leave them out of the SF sum and the noise "
+                         "floors (DDHFConfig.low_cut_hz). Changes sf/snr: use its own "
+                         "--out-dir. Default 0 = the usual spectrum.")
     args = ap.parse_args()
     if args.gpu_fused:                    # inherited by the spawned precompute workers
         os.environ["DDHF_GPU_FUSED"] = "1"
@@ -300,6 +305,8 @@ def main():
         spectral_ov["spectral_oversample"] = int(args.spectral_oversample)
     if args.comb_noise_stat != "median":
         spectral_ov["comb_noise_stat"] = args.comb_noise_stat
+    if args.low_cut_hz > 0:
+        spectral_ov["low_cut_hz"] = float(args.low_cut_hz)
     variant = EX.feature_variant(EX.build_cfg(**spectral_ov))
 
     B._log(log_path, f"START frame features — mode={args.mode} bands={DRONE} "

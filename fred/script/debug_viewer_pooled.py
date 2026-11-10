@@ -160,6 +160,7 @@ from utils import (
     _spectral_flatness_batch,
     _comb_snr_batch,
     _comb_snr_at,
+    _os, _bin_hz, _low_cut_bins, _sf_start, _apply_low_cut,
     _normalise_polarity,
     _normalise_timestamps,
     rgb_frame_seconds,
@@ -258,6 +259,14 @@ HEATMAP_LEVELS = (
 
 # ── Core stats (CHANGED from debug_viewer.py) ────────────────────────────────
 
+def _ndft_spectrum(pol, tn, cfg):
+    """(power, freqs [Hz]) of one group of events, on the same bins as the detector:
+    cfg.spectral_oversample spacing, bins below cfg.low_cut_hz zeroed."""
+    k = np.arange(cfg.frequency_bins, dtype=np.float64)
+    F = (pol[None, :] * np.exp(1j * np.outer(k / _os(cfg), tn))).sum(axis=1)
+    return _apply_low_cut(np.abs(F) ** 2, cfg), k * 1000.0 / cfg.window_ms / _os(cfg)
+
+
 def compute_pixel_stats(evs, ev_height, ev_width, cfg):
     """
     Two-pass pixel statistics.
@@ -344,7 +353,10 @@ def compute_pixel_stats(evs, ev_height, ev_width, cfg):
 
     K = cfg.frequency_bins
     sf = snr = omega = None
-    if _USE_GPU and _gpu_available():
+    # The GPU functions of this folder know neither oversampling, the low cut nor
+    # the mean noise floor, so a working point built with those runs on the CPU.
+    if (_USE_GPU and _gpu_available() and _os(cfg) == 1 and not _low_cut_bins(cfg)
+            and getattr(cfg, "comb_noise_stat", "median") == "median"):
         # Exact GPU detection path used by ddhf_eval_pooled (fp32 by default, set
         # DDHF_GPU_FP32=0 for fp64). Falls back to CPU for this frame on OOM.
         try:
@@ -360,12 +372,13 @@ def compute_pixel_stats(evs, ev_height, ev_width, cfg):
             sf = snr = omega = None
 
     if sf is None:
-        power      = _ndft_power_batch(None, pol_k, tn_k, starts, K)
-        sf         = _spectral_flatness_batch(power[1:])
+        power      = _apply_low_cut(_ndft_power_batch(None, pol_k, tn_k, starts, K,
+                                                      k_step=1.0 / _os(cfg)), cfg)
+        sf         = _spectral_flatness_batch(power[_sf_start(cfg):])
         snr, omega = _comb_snr_batch(power, cfg, return_omega=True)
 
     bpid = pid_k[starts]
-    f0   = omega * 1000.0 / cfg.window_ms
+    f0   = omega * 1000.0 / cfg.window_ms / _os(cfg)   # /1 exact at the default
     if _PIXELIZE or not _POOLING:
         # per-block grids, then upscale each block to its BxB footprint (B=1 for
         # the baseline per-pixel detector, where upscaling is a no-op).
@@ -404,10 +417,7 @@ def pixel_power_spectrum(evs, xe, ye, cfg):
                                    window_span=cfg.window_ms * 1000.0)
     pol_p = pol[sel]
     tn_p  = t_norm[sel]
-    k     = np.arange(cfg.frequency_bins, dtype=np.float64)
-    F     = (pol_p[None, :] * np.exp(1j * np.outer(k, tn_p))).sum(axis=1)
-    power = np.abs(F) ** 2
-    return power, k * 1000.0 / cfg.window_ms
+    return _ndft_spectrum(pol_p, tn_p, cfg)
 
 
 # ── Everything below is identical to debug_viewer.py ─────────────────────────
@@ -416,7 +426,8 @@ def best_comb(power, cfg):
     K = len(power)
     best_omega, best_snr = 0, 0.0
     bands  = cfg.rotor_bands_hz
-    bin_hz = 1000.0 / cfg.window_ms
+    bin_hz = _bin_hz(cfg)
+    hw     = cfg.harmonic_half_width * _os(cfg)
     for omega in range(1, K // cfg.num_harmonics + 1):
         if bands and not any(lo <= omega * bin_hz <= hi for lo, hi in bands):
             continue
@@ -427,19 +438,21 @@ def best_comb(power, cfg):
         hmask = np.zeros(K, dtype=bool)
         peaks = []
         for h in harmonics:
-            lo = max(0, h - cfg.harmonic_half_width)
-            hi = min(K - 1, h + cfg.harmonic_half_width)
+            lo = max(0, h - hw)
+            hi = min(K - 1, h + hw)
             peaks.append(power[lo:hi + 1].max())
             hmask[lo:hi + 1] = True
         nmask = ~hmask; nmask[0] = False
+        nmask[:_low_cut_bins(cfg)] = False           # cfg.low_cut_hz: not noise either
         nbh = getattr(cfg, "noise_band_harmonics", 0.0)
         if nbh > 0:                                  # local noise floor (matches detector)
-            band_hi = min(K, int(nbh * harmonics[-1]) + cfg.harmonic_half_width + 1)
+            band_hi = min(K, int(nbh * harmonics[-1]) + hw + 1)
             nmask[band_hi:] = False
         noise = power[nmask]
         if noise.size == 0:
             continue
-        med = np.median(noise)
+        med = (float(noise.mean()) if getattr(cfg, "comb_noise_stat", "median") == "mean"
+               else np.median(noise))
         mff = getattr(cfg, "snr_median_floor_frac", 0.0)   # optional median floor (off by default)
         if mff > 0:
             med = max(med, mff * float(power[1:].mean()))
@@ -471,16 +484,17 @@ def subharmonic_check(power, omega, cfg):
         return None
     P = np.asarray(power, dtype=np.float64)[:, None]
     bands  = cfg.rotor_bands_hz
-    bin_hz = 1000.0 / cfg.window_ms
+    bin_hz = _bin_hz(cfg)
     M, h_min = cfg.num_harmonics, cfg.min_harmonics
-    dk = int(cfg.subharmonic_half_width)
-    ref = float(_comb_snr_at(P, float(omega), M, h_min, dk)[0])
+    dk = int(cfg.subharmonic_half_width) * _os(cfg)
+    n_cut = _low_cut_bins(cfg)
+    ref = float(_comb_snr_at(P, float(omega), M, h_min, dk, n_cut)[0])
     best_k, best_s = 0, 0.0
     k = 2
     while omega / k >= cfg.subharmonic_min_hz / bin_hz:
         s = omega / k
         if not (bands and any(lo <= s * bin_hz <= hi for lo, hi in bands)):
-            v = float(_comb_snr_at(P, s, M, h_min, dk)[0])
+            v = float(_comb_snr_at(P, s, M, h_min, dk, n_cut)[0])
             if v > best_s:
                 best_k, best_s = k, v
         k += 1
@@ -514,13 +528,11 @@ def detect_components_mask(evs, H, W, cfg):
              if ev_counts[c] >= cfg.min_events and comp_sizes[c] >= cfg.min_rotor_pixels]
     if not cands:
         return rmask, [], labels
-    karr  = np.arange(cfg.frequency_bins, dtype=np.float64)
     boxes = []
     for comp in cands:
         sel = ev_label == comp
-        F = (pol[sel][None, :] * np.exp(1j * np.outer(karr, tn[sel]))).sum(axis=1)
-        power = np.abs(F) ** 2
-        pnd = power[1:] + 1e-12
+        power, _ = _ndft_spectrum(pol[sel], tn[sel], cfg)
+        pnd = power[_sf_start(cfg):] + 1e-12
         sf  = float(np.exp(np.mean(np.log(pnd))) / np.mean(pnd))
         _omega, snr = best_comb(power, cfg)
         if sf <= cfg.tau_sf and snr >= cfg.tau_comb:
@@ -551,9 +563,8 @@ def component_power_spectrum(evs, labels, xe, ye, cfg):
     pol = _normalise_polarity(evs["p"])[sel]
     tn  = _normalise_timestamps(evs["t"].astype(np.float64),
                                 window_span=cfg.window_ms * 1000.0)[sel]
-    k = np.arange(cfg.frequency_bins, dtype=np.float64)
-    F = (pol[None, :] * np.exp(1j * np.outer(k, tn))).sum(axis=1)
-    return np.abs(F) ** 2, k * 1000.0 / cfg.window_ms, nsel
+    power, freqs = _ndft_spectrum(pol, tn, cfg)
+    return power, freqs, nsel
 
 
 def print_f0_consensus(f0_map, rotor_mask):
@@ -800,9 +811,8 @@ def gtbox_pool_spectrum(evs, gt_rects, cfg):
     pol = _normalise_polarity(evs["p"])[m]
     tn  = _normalise_timestamps(evs["t"].astype(np.float64),
                                 window_span=cfg.window_ms * 1000.0)[m]
-    k = np.arange(cfg.frequency_bins, dtype=np.float64)
-    F = (pol[None, :] * np.exp(1j * np.outer(k, tn))).sum(axis=1)
-    return np.abs(F) ** 2, k * 1000.0 / cfg.window_ms, n
+    power, freqs = _ndft_spectrum(pol, tn, cfg)
+    return power, freqs, n
 
 
 def render_gtbox(base_frame, evs, M, gt_rects):
@@ -880,12 +890,16 @@ def _wp_arg_defaults(path):
             d[key] = cast(round(p[key])) if cast is int else cast(p[key])
     if meta.get("mode"):
         d["mode"] = meta["mode"]
-    d.update(_wp_feature_source(path)[1])            # e.g. subharmonic_reject
+    d.update({k: v for k, v in _wp_feature_source(path)[1].items()   # e.g. subharmonic_reject
+              if k in _SPECTRAL_META_KEYS})
     return d
 
 
 _SPECTRAL_META_KEYS = ("subharmonic_reject", "subharmonic_half_width",
                        "subharmonic_min_hz", "subharmonic_ratio")
+# Settings with no CLI flag here (ddhf_config's flags are shared with tools of this
+# folder that do not implement them); main() passes them straight to build_cfg.
+_SPECTRAL_CFG_ONLY_KEYS = ("spectral_oversample", "comb_noise_stat", "low_cut_hz")
 
 
 def _wp_feature_source(wp_path):
@@ -914,7 +928,7 @@ def _wp_feature_source(wp_path):
         with open(m, encoding="utf-8") as fh:
             mm = json.load(fh)
         spectral = {k: (int(mm[k]) if k == "subharmonic_reject" else mm[k])
-                    for k in _SPECTRAL_META_KEYS if k in mm}
+                    for k in _SPECTRAL_META_KEYS + _SPECTRAL_CFG_ONLY_KEYS if k in mm}
     return d, spectral
 
 
@@ -1120,7 +1134,9 @@ def main():
                              "coast-confirm-acquire-predict included). The boxes "
                              "and the green mask come from the replay; every view, "
                              "the heatmap and the click-a-pixel spectrum stay this "
-                             "viewer's own. Needs the case's frame_data cache.")
+                             "viewer's own, computed with the spectral settings of the "
+                             "feature cache the working point was searched on. Needs "
+                             "the case's frame_data cache.")
     # Detector hyperparameters: --tau-sf/--tau-comb/--min-events/--min-box-area/
     # --alpha/--min-rotor-pixels/--num-harmonics/--min-harmonics/
     # --harmonic-half-width/--max-freq-hz/--pixel-block — identical NAMES and
@@ -1208,6 +1224,9 @@ def main():
     # --window-ms drives windowing and the spectrum; --drone overrides the comb
     # bands (default 'all' == the preset's bands).
     overrides = cfg_overrides_from_args(args)
+    if args.wp:                     # same bins, cut and noise floor as the scored cache
+        overrides.update({k: v for k, v in _wp_feature_source(args.wp)[1].items()
+                          if k in _SPECTRAL_CFG_ONLY_KEYS})
     overrides["window_ms"] = args.window_ms
     overrides["step_ms"]   = args.window_ms
     cfg = build_cfg(**overrides)
@@ -1217,7 +1236,7 @@ def main():
                   (f"pixelize {cfg.pixel_block}x{cfg.pixel_block}" if _PIXELIZE
                    else ("3x3 pooled" if _POOLING else "no pooling (per-pixel)")))
     window_us = int(round(args.window_ms * 1000.0))
-    bin_hz    = 1000.0 / args.window_ms
+    bin_hz    = _bin_hz(cfg)
     k_bins    = cfg.frequency_bins
     print(f"[{mode_label}]  window={args.window_ms}ms  bin={bin_hz:.1f}Hz  "
           f"frequency_bins={k_bins}  max_freq={(k_bins-1)*bin_hz:.0f}Hz")
@@ -1540,7 +1559,7 @@ def main():
                 state["evs"], state.get("cc_labels"), xe, ye, cfg)
             pool_word, spec_word = "component", "COMPONENT"
             if power is not None:
-                _pnd = power[1:] + 1e-12
+                _pnd = power[_sf_start(cfg):] + 1e-12
                 sf  = float(np.exp(np.mean(np.log(_pnd))) / np.mean(_pnd))
                 _o, snr = best_comb(power, cfg)
             else:
@@ -1585,13 +1604,14 @@ def main():
             if omega > 0:
                 significant    = snr_best >= args.snr_sig
                 c_fund, c_harm = ("red","orange") if significant else ("0.45","0.65")
-                bin_hz_        = 1000.0 / cfg.window_ms
-                hw_hz          = cfg.harmonic_half_width * bin_hz_
+                bin_hz_        = _bin_hz(cfg)
+                hw_bins        = cfg.harmonic_half_width * _os(cfg)
+                hw_hz          = hw_bins * bin_hz_
                 for m in range(1, cfg.num_harmonics + 1):
                     fh = m * omega * bin_hz_
                     if fh <= freqs[-1]:
                         ax_spec.axvspan(fh-hw_hz, fh+hw_hz, color=c_harm, alpha=0.12,
-                                        label=(f"±Δk ({cfg.harmonic_half_width} bins = ±{hw_hz:.0f}Hz)")
+                                        label=(f"±Δk ({hw_bins} bins = ±{hw_hz:.0f}Hz)")
                                               if m == 1 else None)
                         if m == 1:
                             ax_spec.axvline(fh, color=c_fund, ls="-", lw=1.8, alpha=0.9,
@@ -1600,7 +1620,7 @@ def main():
                             ax_spec.axvline(fh, color=c_harm, ls="--", lw=1.0, alpha=0.6,
                                             label="harmonics" if m == 2 else None)
                 ax_spec.legend(loc="upper right", fontsize=7)
-                fund = omega * 1000.0 / cfg.window_ms
+                fund = omega * _bin_hz(cfg)
                 ax_spec.set_title(
                     f"{spec_word} spectrum — event px ({xe},{ye}), "
                     f"own={n_own} ev / pool={n_pool} ev")
@@ -1617,7 +1637,7 @@ def main():
                     sub_s = (f"\nsubharmonic {chk['sub_hz']:.0f}Hz SNR {chk['sub_snr']:.2f} "
                              f"{'>' if chk['rejected'] else '<='} "
                              f"{cfg.subharmonic_ratio:g}x f0 SNR {chk['ref_snr']:.2f} "
-                             f"(±{cfg.subharmonic_half_width} bin)"
+                             f"(±{cfg.subharmonic_half_width * _os(cfg)} bin)"
                              f" -> {'REJECTED' if chk['rejected'] else 'kept'}")
                 ax_spec.text(
                     0.01, 0.97,
@@ -1722,20 +1742,25 @@ def main():
     CLS_TN, CLS_TP, CLS_OFF, CLS_FN, CLS_FP = 0, 1, 2, 3, 4
 
     def compute_iou_per_frame():
+        # With --wp the graph shows the working point's replayed boxes: no events
+        # to read, and nothing written next to the case.
         # Cache must carry 'cls' (older caches without it are recomputed).
-        if os.path.exists(iou_cache_file):
+        if wp_dets is None and os.path.exists(iou_cache_file):
             z = np.load(iou_cache_file)
             if "cls" in z and z["iou"].shape[0] >= max_idx+1:
                 return z["iou"][:max_idx+1], z["cls"][:max_idx+1]
         print(f"Scanning {max_idx+1} frames for per-frame IoU + match class (pooled) ...")
-        rd  = RawReader(RAW_FILE, max_events=20_000_000)
+        rd  = None if wp_dets is not None else RawReader(RAW_FILE, max_events=20_000_000)
         iou = np.full(max_idx+1, np.nan)
         cls = np.zeros(max_idx+1, dtype=np.int8)        # default TN/none
         for k in range(max_idx):
-            evs = rd.load_delta_t(window_us)
+            evs = None if wp_dets is not None else rd.load_delta_t(window_us)
             n   = k + 1
             gts = gt_rects_at(n)
-            if _COMPONENTS:
+            if wp_dets is not None:
+                boxes = [BoundingBox(int(x1), int(y1), int(x2), int(y2))
+                         for (x1, y1, x2, y2) in wp_dets.get(n, [])]
+            elif _COMPONENTS:
                 _rm, boxes, _lbl = detect_components_mask(evs, ev_height, ev_width, cfg)
             else:
                 cmap, sfm, snrm, _ = compute_pixel_stats(evs, ev_height, ev_width, cfg)
@@ -1755,7 +1780,8 @@ def main():
             else:
                 cls[n] = CLS_FP if det else CLS_TN       # spurious box vs clean empty frame
             if n % 500 == 0: print(f"  frame {n}/{max_idx}")
-        np.savez(iou_cache_file, iou=iou, cls=cls)
+        if wp_dets is None:
+            np.savez(iou_cache_file, iou=iou, cls=cls)
         return iou, cls
 
     def toggle_iou():
@@ -1816,12 +1842,12 @@ def main():
         if power is None:
             ax_spec.set_title("GT-box pooled spectrum — no GT drone / no events in box this frame")
         else:
-            pnd = power[1:] + 1e-12
+            pnd = power[_sf_start(cfg):] + 1e-12
             sf = float(np.exp(np.mean(np.log(pnd))) / np.mean(pnd))
             omega, snr = best_comb(power, cfg)
             ax_spec.plot(freqs[1:], power[1:], color="goldenrod", lw=1.2)
             if omega > 0:
-                bin_hz = 1000.0 / cfg.window_ms
+                bin_hz = _bin_hz(cfg)
                 for m in range(1, cfg.num_harmonics + 1):
                     fh = m * omega * bin_hz
                     if fh <= freqs[-1]:

@@ -119,7 +119,7 @@ def _sweep_case(D, combos, mode, match, thr, track=False, track_sigma=20.0):
             _stage, dets, _comps = FE._track_pass(D, pp, mode, track_sigma)
         else:
             _res, dets, _comps = FE.compute_all(D, mode, p)
-        dets = FE._apply_persistence(dets, lo, hi, p["persist_m"], p["persist_k"])
+        dets = FE._confirm_dets(dets, lo, hi, p)     # m-of-k (or chain_n)
         c = FE.count_matches(D, dets, match, thr)
         rows.append((p, dict(c, frames=n_frames)))
     return rows

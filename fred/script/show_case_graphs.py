@@ -110,7 +110,10 @@ PARAM_COLS = [("min_events", "min_events>="), ("tau_sf", "tau_sf<="),
 def _params_line(d, tracked=None, extra=""):
     """Human-readable threshold line for the title."""
     parts = [f"{lab}{d[k]}" for k, lab in PARAM_COLS if k in d and d[k] is not None]
-    if "persist_m" in d and "persist_k" in d:
+    if d.get("chain_n"):                             # chain replaces m-of-k
+        parts.append(f"chain >={d['chain_n']} gap {d.get('chain_gap', 2)}"
+                     + (f" delay {d['chain_delay']}" if d.get("chain_delay") else ""))
+    elif "persist_m" in d and "persist_k" in d:
         parts.append(f"persist {d['persist_m']}/{d['persist_k']}")
     if tracked is not None:
         parts.append("tracking ON" if tracked else "tracking off")
@@ -254,6 +257,9 @@ def _viewer_cmd(seq, meta, wp_json=None):
            "--min-snr-avg", gf("min_snr_avg", 0.0),
            "--persist-m", gi("persist_m", 1),
            "--persist-k", gi("persist_k", 1),
+           "--chain-n", gi("chain_n", 0),
+           "--chain-gap", gi("chain_gap", 2),
+           "--chain-delay", gi("chain_delay", 0),
            # mirror the metric the working point was scored with
            "--skip-start" if meta.get("skip_start") else "--no-skip-start"]
     if meta.get("match"):
@@ -265,7 +271,8 @@ def _viewer_cmd(seq, meta, wp_json=None):
                 "--track-confirm", gi("track_confirm", 1),
                 "--track-acquire", gf("track_acquire", 1.0)]
         if p.get("track_predict"):
-            cmd += ["--track-predict"]
+            cmd += ["--track-predict",
+                    "--track-vel-smooth", gf("track_vel_smooth", 0.0)]
     data_dir = _wp_data_dir(wp_json)
     if data_dir:
         cmd += ["--data-dir", data_dir]

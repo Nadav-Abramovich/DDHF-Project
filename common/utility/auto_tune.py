@@ -100,8 +100,7 @@ def evaluate(params, Ds, mode, match, thr, track, sigma):
         else:
             _r, dets, _c = FE.compute_all(D, mode, params)
         lo, hi = FE._frame_span(D)
-        dets = FE._apply_persistence(dets, lo, hi,
-                                     params["persist_m"], params["persist_k"])
+        dets = FE._confirm_dets(dets, lo, hi, params)   # m-of-k, or chain_n
         c = FE.count_matches(D, dets, match, thr)
         tp += c["tp"]; fp += c["fp"]; fn += c["fn"]
         hit += c["gt_frames_hit"]; gtf += c["gt_frames"]
@@ -236,11 +235,17 @@ def main():
              f"--min-snr-sum {params['min_snr_sum']} "
              f"--min-snr-avg {params['min_snr_avg']} --alpha {params['alpha']} "
              f"--persist-m {params['persist_m']} --persist-k {params['persist_k']}"
+             + (f" --chain-n {params['chain_n']}"
+                f" --chain-gap {params.get('chain_gap', 2)}"
+                f" --chain-delay {params.get('chain_delay', 0)}"
+                if params.get('chain_n') else "")
              + ((f" --track --track-sigma {args.track_sigma}"
                  f" --track-coast {params.get('track_coast', 0)}"
                  f" --track-confirm {params.get('track_confirm', 1)}"
                  f" --track-acquire {params.get('track_acquire', 1.0)}"
-                 + (" --track-predict" if params.get('track_predict') else ""))
+                 + (" --track-predict" if params.get('track_predict') else "")
+                 + (f" --track-vel-smooth {params['track_vel_smooth']}"
+                    if params.get('track_vel_smooth') else ""))
                 if args.track else ""))
     print("  frame_explorer flags:\n    " + flags)
 

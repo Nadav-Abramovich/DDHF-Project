@@ -1,0 +1,30 @@
+{
+  "kind": "fixed working point evaluated on held-out recordings",
+  "working_point": "fred/data/working_points/working_point_bayes_pixelize_track_ss_box_f1_os4_subharm_lowcut60_validation.json",
+  "command": "eval_validation.py --tag pixelize_track_ss_box_f1_os4_subharm_lowcut60 --objective f1 --agg mean --min-gtf 0 --recall-level box --penalty 3 --data-dir fred/utility/frame_data_os4_subharm_lowcut60",
+  "argv": [
+    "eval_validation.py",
+    "--tag",
+    "pixelize_track_ss_box_f1_os4_subharm_lowcut60",
+    "--objective",
+    "f1",
+    "--agg",
+    "mean",
+    "--min-gtf",
+    "0",
+    "--recall-level",
+    "box",
+    "--penalty",
+    "3",
+    "--data-dir",
+    "fred/utility/frame_data_os4_subharm_lowcut60"
+  ],
+  "code_commit": "06386d2 (+uncommitted changes)",
+  "notes": [
+    "Evaluates working_point_bayes_pixelize_track_ss_box_f1_os4_subharm_lowcut60.json unchanged (no search) on FRED cases 171-230, with the same pipeline, metrics and objective as its search (pure box-level F1, no recall floor).",
+    "Data: fred/utility/frame_data_os4_subharm_lowcut60 files for 171-230, built with common/utility/frame_features.py --mode pixelize --workers 8 --skip-lead-in --keep-downloads --no-download --spectral-oversample 4 --subharmonic-reject --gpu-fused --low-cut-hz 60, one process per recording (no .npz mirrors for these)."
+  ],
+  "feature_cache": {
+    "dir": "fred/utility/frame_data_os4_subharm_lowcut60"
+  }
+}

@@ -71,7 +71,7 @@ PERSIST = [(1, 1), (2, 2), (2, 3), (3, 4), (3, 5)]
 # Bounds cover auto_tune's LADDERS; ints round after decoding, heavy-tailed
 # axes search in log space, persist is an ordinal index into PERSIST.
 
-def build_space(track, snr_avg_max=10.0):
+def build_space(track, snr_avg_max=10.0, chain=False):
     dims = [
         dict(name="min_events",       kind="int",   lo=2,   hi=16),
         dict(name="tau_sf",           kind="float", lo=0.5, hi=0.95),
@@ -84,6 +84,13 @@ def build_space(track, snr_avg_max=10.0):
         dict(name="alpha",            kind="float", lo=1.0, hi=4.0),
         dict(name="persist",          kind="cat",   choices=PERSIST),
     ]
+    if chain:
+        # chain confirmation replaces the m-of-k persistence axis; chain_n 1 =
+        # no confirmation, which is what the default start's persist 1/1 means
+        dims[-1:] = [
+            dict(name="chain_n",   kind="int", lo=1, hi=8, default=1),
+            dict(name="chain_gap", kind="int", lo=1, hi=6, default=2),
+        ]
     if track:
         dims += [
             dict(name="track_coast",   kind="int",   lo=0,   hi=8),
@@ -91,6 +98,9 @@ def build_space(track, snr_avg_max=10.0):
             dict(name="track_acquire", kind="float", lo=1.0, hi=3.0),
             dict(name="track_predict", kind="bool"),
         ]
+        if chain:                                    # smoothed prediction velocity
+            dims.append(dict(name="track_vel_smooth", kind="float",
+                             lo=0.0, hi=0.9, default=0.0))
     return dims
 
 
@@ -137,8 +147,8 @@ def encode(space, params):
     for d in space:
         if d["name"] == "persist":
             vec.append(_dim_encode(d, (params["persist_m"], params["persist_k"])))
-        else:
-            vec.append(_dim_encode(d, params[d["name"]]))
+        else:                                        # .get: seeds may lack new axes
+            vec.append(_dim_encode(d, params.get(d["name"], d.get("default"))))
     return np.array(vec)
 
 
@@ -443,6 +453,7 @@ def fingerprint(args, seqs, thr):
     return (f"mode={args.mode}|track={args.track}:{args.track_sigma:g}"
             f"|match={args.match}:{thr:g}"
             + ("|skip_start" if args.skip_start else "")
+            + ("|chain" if getattr(args, "chain", False) else "")
             + f"|seqs={','.join(seqs)}")
 
 
@@ -610,6 +621,11 @@ def main():
                     help="Tracking mode (DEFAULT ON — --no-track for the plain "
                          "detector).")
     ap.add_argument("--track-sigma", type=float, default=20.0)
+    ap.add_argument("--chain", action=argparse.BooleanOptionalAction, default=False,
+                    help="Search chain confirmation (chain_n, chain_gap) in place "
+                         "of the m-of-k persistence axis and, with tracking, the "
+                         "prediction's velocity smoothing (track_vel_smooth). "
+                         "Default off = the m-of-k search space.")
     # which cases
     ap.add_argument("--seqs", default=None,
                     help="Explicit comma-separated case list (default: all cached).")
@@ -719,7 +735,7 @@ def main():
     fp = fingerprint(args, seqs, thr)
     if args.snr_avg_max <= 0:
         raise SystemExit("--snr-avg-max: need > 0")
-    space = build_space(args.track, args.snr_avg_max)
+    space = build_space(args.track, args.snr_avg_max, args.chain)
 
     if args.reset and os.path.exists(state):
         os.remove(state)
@@ -761,6 +777,10 @@ def main():
                           "track_coast/confirm/acquire/predict too — pass "
                           "--no-track for the plain detector)"
                           if args.track else "off"))
+    if args.chain:
+        print("confirmation: chain (searching chain_n/chain_gap"
+              + ("/track_vel_smooth" if args.track else "")
+              + " in place of persist m/k)")
     print(f"cases ({len(seqs)}): {', '.join(seqs)}")
     base_name = ("f1_frames" if args.objective == "f1_frames"
                  else f"{args.objective}_{args.agg}")

@@ -15,7 +15,7 @@ found by binary search over p in [j, j + n_excluded]. Ties do not matter: the
 order statistic is a value, not a bin."""
 import numpy as np
 
-from utils import _os, _bin_hz
+from utils import _os, _bin_hz, _low_cut_bins
 
 try:
     import cupy as _cp
@@ -50,11 +50,11 @@ __device__ float wmax(const float* P, int lo, int hi) {
 }
 
 __device__ float comb_snr_at(const float* P, const float* sv, const short* rk, int K,
-                             double f0, int M, int hmin, int hw) {
+                             double f0, int M, int hmin, int hw, int ncut) {
     // utils._comb_snr_at: centres rint(m*f0), windows [max(1,c-hw), min(K-1,c+hw)],
-    // DC + windows excluded, median of the rest
-    short rE[MAXE]; int nE = 0, nc = 0, last = 0;
-    rE[nE++] = rk[0];                                     // DC
+    // DC (+ the low-cut bins) + windows excluded, median of the rest
+    short rE[MAXE]; int nE = 0, nc = 0, last = max(1, ncut) - 1;
+    for (int b = 0; b <= last; ++b) rE[nE++] = rk[b];    // DC, low cut
     double psum = 0.0;
     for (int m = 1; m <= M; ++m) {
         int c = (int)rint(m * f0);
@@ -91,7 +91,7 @@ extern "C" __global__ void fused(
     const int* __restrict__ eoff, const short* __restrict__ ebin, const int* __restrict__ nnz_arr,
     int noise_mean, int need_sort,
     int sub_mode, int M, int hmin, int dk, int hw, double fmin, int kmin,
-    double bin_hz, int n_bands, const double* __restrict__ bands, float ratio,
+    double bin_hz, int n_bands, const double* __restrict__ bands, float ratio, int ncut,
     float* __restrict__ sf_out, float* __restrict__ snr_out, int* __restrict__ om_out)
 {
     __shared__ float P[MAXK];
@@ -129,13 +129,14 @@ extern "C" __global__ void fused(
         }
     }
     double slog = 0.0, sp = 0.0, sall = 0.0;
+    const int sfs = max(1, ncut);                        // first bin of the SF sum
     #pragma unroll
     for (int j = 0; j < KPT; ++j) {
         const int k = tid + j * TPB;
         if (k < K) {
-            const float p = re[j] * re[j] + im[j] * im[j];
+            const float p = (k < ncut) ? 0.f : re[j] * re[j] + im[j] * im[j];   // low cut
             P[k] = p; sall += (double)p;
-            if (k >= 1) { const double q = (double)p + 1e-12; slog += log(q); sp += q; }
+            if (k >= sfs) { const double q = (double)p + 1e-12; slog += log(q); sp += q; }
         }
     }
     r1[tid] = slog; r2[tid] = sp; r3[tid] = sall;
@@ -145,7 +146,7 @@ extern "C" __global__ void fused(
         __syncthreads();
     }
     const double S_all = r3[0];
-    if (tid == 0) sf_out[g] = (float)(exp(r1[0] / (K - 1)) / (r2[0] / (K - 1)));
+    if (tid == 0) sf_out[g] = (float)(exp(r1[0] / (K - sfs)) / (r2[0] / (K - sfs)));
 
     // ---- 2. sort the group's bins once (bitonic), rank of every bin ----
     if (need_sort) {
@@ -221,7 +222,7 @@ extern "C" __global__ void fused(
                 if (bands[2 * b] <= s * bin_hz && s * bin_hz <= bands[2 * b + 1]) inband = true;
             if (inband) continue;
             const float v = (sub_mode == 2) ? between_peak(P, K, s, k, M, dk, fmin)
-                                            : comb_snr_at(P, sv, rk, K, s, M, hmin, dk);
+                                            : comb_snr_at(P, sv, rk, K, s, M, hmin, dk, ncut);
             sub_t = fmaxf(sub_t, v);
         }
         bs[tid] = sub_t;
@@ -238,7 +239,7 @@ extern "C" __global__ void fused(
                     if (c < K) { rs += (double)wmax(P, max(1, c - hw), min(K - 1, c + hw)); ++nr; }
                 ref = nr ? (float)(rs / nr) : 0.f;
             } else {
-                ref = comb_snr_at(P, sv, rk, K, (double)om, M, hmin, dk);
+                ref = comb_snr_at(P, sv, rk, K, (double)om, M, hmin, dk, ncut);
             }
             if (bs[0] > ratio * ref) best = 0.f;
         }
@@ -274,7 +275,8 @@ def _plan(cfg):
     utils._comb_snr_batch selects them. Cached per configuration."""
     K = cfg.frequency_bins
     key = (K, cfg.num_harmonics, cfg.min_harmonics, cfg.harmonic_half_width, cfg.window_ms,
-           cfg.rotor_bands_hz, getattr(cfg, "noise_band_harmonics", 0.0), _os(cfg))
+           cfg.rotor_bands_hz, getattr(cfg, "noise_band_harmonics", 0.0), _os(cfg),
+           _low_cut_bins(cfg))
     pl = _PLAN.get(key)
     if pl is not None:
         return pl
@@ -293,6 +295,7 @@ def _plan(cfg):
             hlo.append(lo); hhi.append(hi); hmask[lo:hi + 1] = True
         noise = ~hmask
         noise[0] = False
+        noise[:_low_cut_bins(cfg)] = False
         nbh = getattr(cfg, "noise_band_harmonics", 0.0)
         if nbh > 0:
             noise[min(K, int(nbh * harmonics[-1]) + hw + 1):] = False
@@ -341,7 +344,7 @@ def fused_stats(pol_k, tn_k, starts, cfg):
         np.float64(getattr(cfg, "subharmonic_min_hz", 60.0) / _bin_hz(cfg)),
         np.int32(max(2, int(getattr(cfg, "subharmonic_min_k", 2)))),
         np.float64(_bin_hz(cfg)), np.int32(pl["n_bands"]), pl["bands"],
-        np.float32(getattr(cfg, "subharmonic_ratio", 1.0)),
+        np.float32(getattr(cfg, "subharmonic_ratio", 1.0)), np.int32(_low_cut_bins(cfg)),
         sf, snr, om))
     return (_cp.asnumpy(sf).astype(np.float64), _cp.asnumpy(snr).astype(np.float64),
             _cp.asnumpy(om).astype(np.int64))

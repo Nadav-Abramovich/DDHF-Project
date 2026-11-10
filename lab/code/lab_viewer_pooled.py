@@ -1004,7 +1004,10 @@ WP_GATE_FLAGS = (
     ("min_box_area", "min_box_area", int), ("alpha", "alpha", float),
     ("min_fill_ratio", "min_fill_ratio", float), ("min_snr_sum", "min_snr_sum", float),
     ("min_snr_avg", "min_snr_avg", float), ("persist_m", "persist_m", int),
-    ("persist_k", "persist_k", int), ("track_coast", "track_coast", int),
+    ("persist_k", "persist_k", int), ("chain_n", "chain_n", int),
+    ("chain_gap", "chain_gap", int), ("chain_delay", "chain_delay", int),
+    ("track_vel_smooth", "track_vel_smooth", float),
+    ("track_coast", "track_coast", int),
     ("track_confirm", "track_confirm", int), ("track_acquire", "track_acquire", float),
     ("track_predict", "track_predict", bool),
 )
@@ -1202,8 +1205,7 @@ def _wp_replay(meta, seq, data_dir=None):
         res, dets, _comps = FE.compute_all(D, mode, params)
         stage = res["stage"]
     lo, hi = FE._frame_span(D)
-    dets = FE._apply_persistence(dets, lo, hi, params.get("persist_m", 1),
-                                 params.get("persist_k", 1))
+    dets = FE._confirm_dets(dets, lo, hi, params)    # m-of-k or chain
     # With skip_start the score ignores everything before the first GT sighting;
     # drop those detections as _compute_job does, and keep the boundary so the
     # viewer can label that stretch instead of just showing an empty frame.
@@ -1467,6 +1469,11 @@ def main():
     wpg.add_argument("--min-snr-avg",    type=float, default=None)
     wpg.add_argument("--persist-m",      type=int,   default=None)
     wpg.add_argument("--persist-k",      type=int,   default=None)
+    wpg.add_argument("--chain-n",        type=int,   default=None,
+                     help="chain confirmation instead of persist m/k (0 = off)")
+    wpg.add_argument("--chain-gap",      type=int,   default=None)
+    wpg.add_argument("--chain-delay",    type=int,   default=None)
+    wpg.add_argument("--track-vel-smooth", type=float, default=None)
     wpg.add_argument("--track-coast",    type=int,   default=None)
     wpg.add_argument("--track-confirm",  type=int,   default=None)
     wpg.add_argument("--track-acquire",  type=float, default=None)

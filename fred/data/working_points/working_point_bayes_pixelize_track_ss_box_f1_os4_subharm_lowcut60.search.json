@@ -1,0 +1,70 @@
+{
+  "kind": "bayesian search",
+  "working_point": "fred/data/working_points/working_point_bayes_pixelize_track_ss_box_f1_os4_subharm_lowcut60.json",
+  "command": "common/utility/bayes_working_point.py --mode pixelize --track --track-sigma 20 --match center --agg mean --recall-level box --penalty 3 --skip-start --iterations 60 --objective f1 --min-gtf 0 --workers 8 --data-dir fred/utility/frame_data_os4_subharm_lowcut60 --seqs 0..170 --state fred/data/working_points/bayes_wp_pixelize_track_ss_box_f1_os4_subharm_lowcut60.jsonl --out fred/data/working_points/working_point_bayes_pixelize_track_ss_box_f1_os4_subharm_lowcut60.json",
+  "argv": [
+    "common/utility/bayes_working_point.py",
+    "--mode",
+    "pixelize",
+    "--track",
+    "--track-sigma",
+    "20",
+    "--match",
+    "center",
+    "--agg",
+    "mean",
+    "--recall-level",
+    "box",
+    "--penalty",
+    "3",
+    "--skip-start",
+    "--iterations",
+    "60",
+    "--objective",
+    "f1",
+    "--min-gtf",
+    "0",
+    "--workers",
+    "8",
+    "--data-dir",
+    "fred/utility/frame_data_os4_subharm_lowcut60",
+    "--seqs",
+    "0..170",
+    "--state",
+    "fred/data/working_points/bayes_wp_pixelize_track_ss_box_f1_os4_subharm_lowcut60.jsonl",
+    "--out",
+    "fred/data/working_points/working_point_bayes_pixelize_track_ss_box_f1_os4_subharm_lowcut60.json"
+  ],
+  "code_commit": "06386d2 (+uncommitted changes)",
+  "notes": [
+    "Same search as working_point_bayes_pixelize_track_ss_box_f1_os4_subharm (mean box F1, no recall floor, skip-start, cases 0-170, 60 evaluations, fresh journal) on a cache that adds a 60 Hz low cut: the NDFT bins below 60 Hz are zeroed before the SF / comb / subharmonic tests and left out of the SF sum and the comb noise floors (DDHFConfig.low_cut_hz = 60).",
+    "Data: fred/utility/frame_data_os4_subharm_lowcut60, built with common/utility/frame_features.py --mode pixelize --workers 8 --skip-lead-in --keep-downloads --no-download --spectral-oversample 4 --subharmonic-reject --low-cut-hz 60 --gpu-fused (subharmonic_half_width 1, min 60 Hz, ratio 1, comb mode, median noise floor), one process per recording; verified .npz mirrors made with fred/utility/convert_cache_npz.py.",
+    "Unspecified options at script defaults: --init-random 8, --xi 0.01, --seed 0, --match-thr 1.0 (center), seeds auto-discovered."
+  ],
+  "journal": {
+    "file": "fred/data/working_points/bayes_wp_pixelize_track_ss_box_f1_os4_subharm_lowcut60.jsonl",
+    "created": "2026-11-05 00:31:23",
+    "fingerprint": "mode=pixelize|track=True:20|match=center:1|skip_start|seqs=0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108,109,110,111,112,113,114,115,116,117,118,119,120,121,122,123,124,125,126,127,128,129,130,131,132,133,134,135,136,137,138,139,140,141,142,143,144,145,146,147,148,149,150,151,152,153,154,155,156,157,158,159,160,161,162,163,164,165,166,167,168,169,170",
+    "evaluations": 60,
+    "failed": 0,
+    "point_sources": {
+      "default": 1,
+      "working_point_bayes_pixelize_track.json": 1,
+      "random": 8,
+      "gp-ei": 50
+    },
+    "compute_hours": 2.25
+  },
+  "feature_cache": {
+    "dir": "fred/utility/frame_data_os4_subharm_lowcut60",
+    "settings": {
+      "mode": "pixelize",
+      "drone": "all",
+      "min_events_floor": 3,
+      "sf_max": 0.9,
+      "snr_min": 1.5,
+      "lead_in_skipped": true,
+      "window_ms": 33.333
+    }
+  }
+}

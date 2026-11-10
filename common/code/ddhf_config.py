@@ -30,6 +30,7 @@ _PRESET = dict(
     subharmonic_mode="comb", subharmonic_min_k=2,   # 'between' = lines between ω*'s harmonics
     comb_noise_stat="median",   # comb SNR noise floor: 'median' (paper) or 'mean'
     spectral_oversample=1,      # n>1: NDFT bins every 1000/(window_ms*n) Hz (1 = paper)
+    low_cut_hz=0.0,             # >0: zero the NDFT bins below this [Hz] before SF / comb (0 = paper)
 )
 
 # CLI flag stem -> (DDHFConfig field, type). window_ms/step_ms are driven by the
@@ -58,6 +59,7 @@ _CFG_CLI_FIELDS = [
     ("subharmonic-min-k",       "subharmonic_min_k",       int),
     ("spectral-oversample",     "spectral_oversample",     int),
     ("comb-noise-stat",         "comb_noise_stat",         str),   # median | mean
+    ("low-cut-hz",              "low_cut_hz",              float),
 ]
 
 
@@ -93,6 +95,7 @@ def format_cfg(cfg):
         f"subharmonic_ratio={cfg.subharmonic_ratio}, "
         f"subharmonic_mode={cfg.subharmonic_mode!r}, subharmonic_min_k={cfg.subharmonic_min_k},",
         f"    spectral_oversample={cfg.spectral_oversample}, comb_noise_stat={cfg.comb_noise_stat!r},",
+        *([f"    low_cut_hz={cfg.low_cut_hz},"] if getattr(cfg, "low_cut_hz", 0.0) > 0 else []),
         f"    rotor_bands_hz={cfg.rotor_bands_hz},",
         f"    # derived: frequency_bins K={cfg.frequency_bins}",
         ")",
@@ -248,6 +251,7 @@ def run_param_items(args, mode_tag, cfg):
         ("subharmonic_min_k", cfg.subharmonic_min_k),
         ("spectral_oversample", cfg.spectral_oversample),
         ("comb_noise_stat", cfg.comb_noise_stat),
+        *([("low_cut_hz", cfg.low_cut_hz)] if getattr(cfg, "low_cut_hz", 0.0) > 0 else []),
         ("rotor_bands_hz", rotor_bands_to_cli(cfg.rotor_bands_hz) if cfg.rotor_bands_hz else "(all)"),
         ("frequency_bins_K", cfg.frequency_bins),
     ]

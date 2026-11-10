@@ -5,6 +5,8 @@
 /lab/runs/
 /lab/frame_data/
 /lab/frame_data_variants/
+/lab/frame_data_subharm/
+/lab/code/common/cache/
 
 # Python virtual environment
 /common/.venv312/

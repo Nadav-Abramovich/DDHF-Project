@@ -395,6 +395,79 @@ def _apply_persistence(dets, f_lo, f_hi, m, k):
     return out
 
 
+# Chain confirmation: the link radius grows with the gap since the chain's last box
+_CHAIN_R0 = 40.0             # link radius [px] when no frame was missed
+_CHAIN_R_PER_GAP = 2.0       # extra radius [px] per missed frame
+_CHAIN_R_MAX = 100.0         # radius cap [px]
+
+
+def _apply_chain(dets, f_lo, f_hi, n, gap=2, delay=0):
+    """Chain confirmation on raw per-frame detections (the alternative to the
+    m-of-k persistence). Raw boxes are linked frame to frame into chains: every
+    live chain (longest first) takes the nearest unused box centre within
+    min(_CHAIN_R_MAX, _CHAIN_R0 + _CHAIN_R_PER_GAP x missed frames) of its last
+    box; a chain dies after more than `gap` missed frames; unlinked boxes start
+    new chains. A box is reported only if its chain holds >= n boxes by frame
+    f + delay: delay 0 is causal (reported from the chain's n-th box on); delay D
+    holds the output back D frames, so the earlier boxes of a chain that proved
+    long enough are reported too. n <= 1 = off (everything is reported).
+    Unlike m-of-k, the support must come from ONE moving object: boxes of
+    different short-lived false alarms near each other do not add up."""
+    n = int(n); gap = max(0, int(gap)); delay = max(0, int(delay))
+    if n <= 1:
+        return dets
+    live, chains = [], []
+    for f in range(f_lo, f_hi + 1):
+        cur = dets.get(f, [])
+        if not cur:
+            continue
+        live = [c for c in live if f - c["f"] - 1 <= gap]
+        C = np.array([((r[0] + r[2]) / 2.0, (r[1] + r[3]) / 2.0) for r in cur])
+        used = np.zeros(len(cur), bool)
+        for c in sorted(live, key=lambda c: -len(c["fr"])):
+            d = np.hypot(C[:, 0] - c["x"], C[:, 1] - c["y"])
+            d[used] = np.inf
+            j = int(d.argmin())
+            if d[j] <= min(_CHAIN_R_MAX,
+                           _CHAIN_R0 + _CHAIN_R_PER_GAP * (f - c["f"] - 1)):
+                used[j] = True
+                c["fr"].append(f); c["box"].append(cur[j])
+                c["f"] = f; c["x"] = C[j, 0]; c["y"] = C[j, 1]
+        for j in np.flatnonzero(~used):
+            c = dict(f=f, x=C[j, 0], y=C[j, 1], fr=[f], box=[cur[j]])
+            live.append(c); chains.append(c)
+    out = {}
+    for c in chains:
+        if len(c["fr"]) < n:
+            continue
+        fr = np.asarray(c["fr"])
+        have = np.searchsorted(fr, fr + delay, side="right")   # boxes by f+delay
+        for i in np.flatnonzero(have >= n):
+            out.setdefault(int(fr[i]), []).append(c["box"][i])
+    return out
+
+
+def _confirm_dets(dets, f_lo, f_hi, p):
+    """Temporal confirmation of the raw detections: chain confirmation when
+    p['chain_n'] > 0 (chain_gap, chain_delay), else the m-of-k persistence
+    (persist_m, persist_k). Every tool calls this, so a working point's
+    confirmation rule is applied the same way everywhere."""
+    if int(p.get("chain_n", 0) or 0) > 0:
+        return _apply_chain(dets, f_lo, f_hi, p["chain_n"],
+                            p.get("chain_gap", 2), p.get("chain_delay", 0))
+    return _apply_persistence(dets, f_lo, f_hi, p.get("persist_m", 1),
+                              p.get("persist_k", 1))
+
+
+def _confirm_label(p):
+    """Short text of the confirmation rule in force (GUI status lines)."""
+    if int(p.get("chain_n", 0) or 0) > 0:
+        d = int(p.get("chain_delay", 0) or 0)
+        return (f"chain >={int(p['chain_n'])} gap {int(p.get('chain_gap', 2))}"
+                + (f" delay {d}" if d else ""))
+    return f"persist {p.get('persist_m', 1)}/{p.get('persist_k', 1)}"
+
+
 def _score_caches(D, dets, match):
     """Best match score per GT instance / per detection / per GT frame — arrays a
     threshold can be applied to instantly (the match_thr slider re-splits live).
@@ -721,7 +794,7 @@ def count_matches(D, dets, match, thr, f_lo=None):
 def _compute_job(D, mode, params, abort_cb=None):
     """One metrics job: stage+histograms and detections at `params` (the Gaussian-
     relaxed tracking pass when params['tracking'], else the vectorised
-    compute_all) + persistence + match-score caches. Returns (res, dets, caches).
+    compute_all) + persistence / chain confirmation + match-score caches. Returns (res, dets, caches).
     Shared by the GUI's worker process, its in-process fallback, metrics_report
     and the threshold sweep. abort_cb (tracking only): raise _Superseded when a
     newer request is waiting, so a long pass never blocks fresher settings."""
@@ -733,8 +806,7 @@ def _compute_job(D, mode, params, abort_cb=None):
     else:
         res, dets, comps = compute_all(D, mode, params)
     lo, hi = _frame_span(D)
-    dets = _apply_persistence(dets, lo, hi, params.get("persist_m", 1),
-                              params.get("persist_k", 1))
+    dets = _confirm_dets(dets, lo, hi, params)       # m-of-k or chain
     if params.get("skip_start"):                     # ignore the pre-GT lead-in
         f0 = first_gt_frame(D)
         if f0 is not None:
@@ -851,6 +923,10 @@ def _track_pass(D, p, mode, sigma, abort_cb=None, trace=None):
                                A·(1-g).
       track_predict   (off)    anchors extrapolate with the track's velocity —
                                keeps fast movers inside the σ radius.
+      track_vel_smooth B (0=off)  with track_predict: the velocity is smoothed,
+                               v = B·v + (1-B)·last step, instead of the raw
+                               last step — one jittery box no longer throws
+                               the anchor off a slow or hovering target.
 
     Guards: vectorised per-component stats, _DET_FRAME_CAP strongest components
     per frame, _TRACK_MAX_CENTERS anchors, _TRACK_LIST_CAP tracks, and
@@ -870,6 +946,7 @@ def _track_pass(D, p, mode, sigma, abort_cb=None, trace=None):
     coast = max(0, int(p.get("track_coast", 0)))
     confirm = max(1, int(p.get("track_confirm", 1)))
     predict = bool(p.get("track_predict", False))
+    vsm = min(max(float(p.get("track_vel_smooth", 0.0)), 0.0), 0.99)
     # NOTE: tau_sf is NOT acquisition-tightened — SF is a bounded [0,1] flatness
     # measure whose useful range sits at 0.5-0.9; dividing it by A rejects nearly
     # everything. A applies to the count/SNR-like gates only.
@@ -996,8 +1073,8 @@ def _track_pass(D, p, mode, sigma, abort_cb=None, trace=None):
                 j = int(np.argmin(d2t)) if d2t.size else -1
                 if j >= 0 and d2t[j] <= match_r2:
                     used[j] = True
-                    t["vx"] = (dcx[j] - t["x"]) / steps
-                    t["vy"] = (dcy[j] - t["y"]) / steps
+                    t["vx"] = vsm * t["vx"] + (1.0 - vsm) * (dcx[j] - t["x"]) / steps
+                    t["vy"] = vsm * t["vy"] + (1.0 - vsm) * (dcy[j] - t["y"]) / steps
                     t["x"] = float(dcx[j]); t["y"] = float(dcy[j])
                     t["area"] = float(dar[j])
                     t["hits"] += 1; t["miss"] = 0
@@ -1243,7 +1320,7 @@ def launch_gui(seq, mode, data_dir, p0, match="center", match_thr=None,
             f"snr>={state['tau_comb']:.2f}\n"
             f"comp: px>={state['min_rotor_pixels']}  fill>={state['min_fill_ratio']:.2f}  "
             f"area>={state['min_box_area']}  snr_sum>={state['min_snr_sum']:.0f}\n"
-            f"merge a={state['alpha']:.2f}   persist {state['persist_m']}/{state['persist_k']}"
+            f"merge a={state['alpha']:.2f}   {_confirm_label(state)}"
             f"   tracking {'ON s=%.0f' % state['track_sigma'] if state['tracking'] else 'off'}\n\n"
             f"frames={D['n_frames']}  GT frames={D['n_gt']}\n"
             f"total candidate px={D['gc'].size}\n\n" + _metrics_lines())
@@ -1872,7 +1949,7 @@ def launch_gui_tk(seq, mode, data_dir, p0, match="center", match_thr=None,
             f"frames={D['n_frames']}  GT frames={D['n_gt']}\n"
             f"candidate px={D['gc'].size}\n"
             f"tracking {'ON s=%.0f coast=%d conf=%d acq=%.1f%s' % (state['track_sigma'], state['track_coast'], state['track_confirm'], state['track_acquire'], ' pred' if state['track_predict'] else '') if state['tracking'] else 'off'}"
-            f"   persist {state['persist_m']}/{state['persist_k']}"
+            f"   {_confirm_label(state)}"
             f"   window x{G.get('wscale', 1)}\n\n"
             + _metrics_text())
 
@@ -2241,6 +2318,18 @@ def main():
                          "(m=1 = off).")
     ap.add_argument("--persist-k", type=int, default=1,
                     help="Temporal persistence window k (frames).")
+    ap.add_argument("--chain-n", type=int, default=0,
+                    help="Chain confirmation INSTEAD of m-of-k persistence: raw "
+                         "boxes are linked frame to frame and a box is reported "
+                         "from its chain's n-th box on (0 = off, use "
+                         "--persist-m/-k).")
+    ap.add_argument("--chain-gap", type=int, default=2,
+                    help="Chain confirmation: a chain survives this many missed "
+                         "frames (default 2).")
+    ap.add_argument("--chain-delay", type=int, default=0,
+                    help="Chain confirmation: hold the output back this many "
+                         "frames — a box is reported if its chain reaches "
+                         "--chain-n boxes within the delay (0 = causal).")
     ap.add_argument("--match", choices=MATCH_MODES, default="center",
                     help="Detection-vs-GT matching: 'center' = det center within "
                          "thr × GT half-diagonal of the GT center (the codebase's "
@@ -2269,6 +2358,9 @@ def main():
                          "(strict acquisition, loose sustain; 1 = off).")
     ap.add_argument("--track-predict", action="store_true",
                     help="Tracking: extrapolate anchors with track velocity.")
+    ap.add_argument("--track-vel-smooth", type=float, default=0.0,
+                    help="Tracking, with --track-predict: smooth the velocity, "
+                         "v = B*v + (1-B)*last step (0 = raw last step).")
     ap.add_argument("--skip-start", action=argparse.BooleanOptionalAction,
                     default=True,
                     help="Ignore each case's frames BEFORE the first GT "
@@ -2286,8 +2378,11 @@ def main():
              skip_start=args.skip_start,
              min_snr_sum=args.min_snr_sum, min_snr_avg=args.min_snr_avg,
              persist_m=args.persist_m, persist_k=args.persist_k,
+             chain_n=args.chain_n, chain_gap=args.chain_gap,
+             chain_delay=args.chain_delay,
              track_coast=args.track_coast, track_confirm=args.track_confirm,
-             track_acquire=args.track_acquire, track_predict=args.track_predict)
+             track_acquire=args.track_acquire, track_predict=args.track_predict,
+             track_vel_smooth=args.track_vel_smooth)
 
     if args.report:
         D = load_D(args.seq, args.mode, args.data_dir)
