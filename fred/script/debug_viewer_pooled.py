@@ -949,6 +949,7 @@ def _wp_replay(wp_path, seq, data_dir=None):
                   match=meta.get("match", "center"),
                   skip_start=bool(meta.get("skip_start", False)))
     res, dets, _caches, _comps = FE._compute_job(D, mode, params)
+    meta["_vetoed"] = res.get("vetoed") or {}        # boxes the post-detection veto removed
     stage = res["stage"]
     # With skip_start the score ignores everything before the first GT sighting,
     # and _compute_job has already dropped those detections — keep the boundary so
@@ -1370,9 +1371,12 @@ def main():
         if args.track:                                   # show the tracker's box, not the per-frame boxes
             tb = tracked.get(idx)
             boxes = [tb] if tb is not None else []
+        vetoed = []
         if wp_dets is not None:                          # --wp: the scored pipeline's
             boxes = [BoundingBox(int(x1), int(y1), int(x2), int(y2))
                      for (x1, y1, x2, y2) in wp_dets.get(idx, [])]
+            vetoed = [BoundingBox(int(x1), int(y1), int(x2), int(y2))    # removed by the veto
+                      for (x1, y1, x2, y2) in wp_meta.get("_vetoed", {}).get(idx, [])]
             rmask = _wp_pass_mask(wp_pass.get(idx), ev_height, ev_width,
                                   cfg.pixel_block if _PIXELIZE else 1)
         print_f0_consensus(f0m, rmask)
@@ -1384,7 +1388,7 @@ def main():
         fr = dict(base_frame=base_frame, evs=evs,
                   count_map=cmap, sf_map=sfm.astype(np.float32),
                   snr_map=snrm.astype(np.float32), rotor_mask=rmask,
-                  boxes=boxes, cc_labels=cc_labels,
+                  boxes=boxes, vetoed=vetoed, cc_labels=cc_labels,
                   gt_rects=gt_rects_at(idx))
         frame_cache[idx] = fr
         if len(frame_cache) > FRAME_CACHE_MAX:
@@ -1422,6 +1426,13 @@ def main():
             pim = Image.fromarray(img)
             _draw_gt(ImageDraw.Draw(pim), state["gt_rects"], det_rects,
                      cds, cdp, match_color=True, evs=state["evs"])
+            img = np.array(pim)
+        if state.get("vetoed"):                          # boxes the post-detection veto removed
+            pim = Image.fromarray(img); _vd = ImageDraw.Draw(pim); H_, W_ = img.shape[:2]
+            for b in state["vetoed"]:
+                vx1, vy1, vx2, vy2 = _project_box_to_rgb(b, M, W_, H_)
+                _vd.rectangle([vx1, vy1, vx2, vy2], outline=(255, 0, 255), width=DET_BOX_WIDTH)
+                _vd.text((vx1 + 2, max(0, vy1 - 12)), "vetoed", fill=(255, 0, 255))
             img = np.array(pim)
         return img
 

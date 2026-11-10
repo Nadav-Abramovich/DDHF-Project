@@ -238,6 +238,8 @@ def _viewer_cmd(seq, meta, wp_json=None):
                 "--track-acquire", gf("track_acquire", 1.0)]
         if p.get("track_predict"):
             cmd += ["--track-predict"]
+    if float(p.get("veto_peak", 0) or 0) > 0:        # post-detection veto
+        cmd += ["--veto-peak", gf("veto_peak", 0.0), "--veto-harm", gf("veto_harm", 20.0)]
     return cmd
 
 

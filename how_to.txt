@@ -94,6 +94,17 @@ up in show_case_graphs.bat automatically.
   fred\utility\pass_rate_vs_events.py detector pass rate vs events per pixel
   fred\utility\convert_cache_npz.py   faster-loading .npz copies of the caches
 
+Post-detection filter (working points whose name ends in _veto):
+  A working point with "veto_peak" / "veto_harm" in its params deletes, after
+  detection, every box whose raw events (pooled over the box, one window) show
+  a line at 60-250 Hz at least veto_peak times the spectrum median, with a 2nd
+  or 3rd harmonic of at least veto_harm times the median - a fan or a
+  mains-driven light, not a rotor. Boxes with fewer than 16 events are kept.
+  It reads the case's raw events once; the measurements are then kept next to
+  the feature cache (veto_<case>.npz). In the viewers the deleted boxes are
+  drawn in orange (frame_explorer) or magenta (debug / lab viewer), labelled
+  "vetoed". frame_explorer takes it as --veto-peak / --veto-harm.
+
 
 6. WHERE THINGS ARE
 -------------------

@@ -669,6 +669,138 @@ def _rgb_frame(seq, f, H, W, _cache={}):
     return _cache["img"]
 
 
+# ── post-detection low-frequency veto ───────────────────────────────────────────
+# Off unless params["veto_peak"] > 0. For every FINAL detection box the raw events
+# inside it (that window) are pooled into one spectrum on a 4x finer frequency grid
+# and divided by its median: f = the tallest bin in 60-250 Hz, h1 its height,
+# hh = the tallest bin within +-2 bins of 2f or 3f. The box is deleted when
+# h1 >= veto_peak AND hh >= veto_harm: a strong periodic source BELOW the rotor
+# bands (a fan, a mains-driven light) whose harmonics the comb took for a rotor.
+# Boxes with < 16 events are kept. It needs the case's raw events; the (h1, hh)
+# of every measured box are cached next to the feature tables (veto_<seq>.npz), so
+# replays and threshold changes do not read the events again.
+VETO_BAND_HZ = (60.0, 250.0)
+VETO_MAX_HZ = 6300.0
+VETO_OS = 4
+VETO_MIN_EVENTS = 16
+_VETO_MEM = {}
+
+
+def _event_path(seq):
+    """The case's raw event file, or None when the case is not on disk."""
+    import hf_cases
+    for root in _RGB_CASE_ROOTS:
+        try:
+            return hf_cases.event_file(os.path.join(root, str(seq)))
+        except FileNotFoundError:
+            continue
+    return None
+
+
+def _veto_window_us(data_dir, seq, mode):
+    import json
+    try:
+        with open(os.path.join(data_dir, f"meta_{seq}_{mode}.json"),
+                  encoding="utf-8") as fh:
+            return int(json.load(fh).get("window_us", 33333))
+    except (OSError, ValueError):
+        return 33333
+
+
+def _veto_measure(t_rel, pol, window_us):
+    """(h1, hh) of one box. t_rel = event times [us] from the window start, pol = +-1.
+    Timestamps are whole microseconds, so the spectrum on the 1 / (VETO_OS x window)
+    grid is exactly the FFT of the per-microsecond signed event counts."""
+    h = np.bincount(t_rel, weights=pol, minlength=window_us)[:window_us]
+    k = int(round(VETO_MAX_HZ * VETO_OS * window_us / 1e6))
+    p = np.abs(np.fft.rfft(h, n=VETO_OS * window_us)[:k]) ** 2
+    pn = p / max(float(np.median(p[1:])), 1e-12)
+    hz = 1e6 / (VETO_OS * window_us)
+    lo = int(np.ceil(VETO_BAND_HZ[0] / hz)); hi = int(np.floor(VETO_BAND_HZ[1] / hz))
+    i1 = lo + int(np.argmax(pn[lo:hi + 1]))
+    hh = max(float(pn[max(1, i1 * m - 2): i1 * m + 3].max()) for m in (2, 3))
+    return float(pn[i1]), hh
+
+
+def _veto_scores(D, dets):
+    """{(frame, x1, y1, x2, y2): (h1, hh)} covering every box of `dets`: read from
+    veto_<seq>.npz, boxes not in it are measured from the raw events and added.
+    Without the raw events the unmeasured boxes stay unknown (and are kept)."""
+    data_dir, seq, mode, wscale = D["_token"]
+    path = os.path.join(data_dir, f"veto_{seq}.npz")
+    sc = _VETO_MEM.get(path)
+    if sc is None:
+        sc = {}
+        if os.path.exists(path):
+            try:
+                with np.load(path) as z:             # closed, so the file can be replaced
+                    sc = {tuple(int(v) for v in b): (float(a[0]), float(a[1]))
+                          for b, a in zip(z["box"], z["val"])}
+            except Exception:
+                sc = {}
+        _VETO_MEM.clear(); _VETO_MEM[path] = sc      # one case kept in memory
+    need = {}
+    for f, rects in dets.items():
+        for r in rects:
+            key = (int(f), int(r[0]), int(r[1]), int(r[2]), int(r[3]))
+            if key not in sc:
+                need.setdefault(int(f), set()).add(key)
+    if not need or wscale != 1:
+        return sc
+    ev_path = _event_path(seq)
+    if ev_path is None:
+        print(f"[veto] case {seq}: raw events not on disk - "
+              f"{sum(len(v) for v in need.values())} boxes not measured (kept)")
+        return sc
+    from utils import _normalise_polarity
+    w_us = _veto_window_us(data_dir, seq, mode)
+    rd = EX.dv.RawReader(ev_path, max_events=20_000_000)
+    cur = 0
+    for f in sorted(need):
+        t0 = (f - 1) * w_us                          # table frame f = window f-1
+        if f < 1:
+            sc.update((key, (0.0, 0.0)) for key in need[f]); continue
+        if t0 != cur:
+            rd.seek_time(t0)
+        evs = rd.load_delta_t(w_us); cur = t0 + w_us
+        # a seek lands on the file index at or before t0, so the read can start
+        # a little early: keep exactly this window
+        evs = evs[(evs["t"] >= t0) & (evs["t"] < t0 + w_us)]
+        x = evs["x"]; y = evs["y"]
+        for key in need[f]:
+            m = (x >= key[1]) & (x <= key[3]) & (y >= key[2]) & (y <= key[4])
+            if int(m.sum()) < VETO_MIN_EVENTS:
+                sc[key] = (0.0, 0.0)
+            else:
+                sc[key] = _veto_measure((evs["t"][m] - t0).astype(np.int64),
+                                        _normalise_polarity(evs["p"][m]), w_us)
+    del rd
+    tmp = path[:-4] + ".tmp.npz"
+    np.savez(tmp, box=np.array(list(sc.keys()), np.int32).reshape(-1, 5),
+             val=np.array(list(sc.values()), np.float32).reshape(-1, 2))
+    os.replace(tmp, path)
+    return sc
+
+
+def _apply_veto(D, dets, params):
+    """(kept, vetoed), both {frame: [rects]}: the boxes the veto deletes at
+    params['veto_peak'] / params['veto_harm'] are moved to `vetoed`."""
+    peak = float(params["veto_peak"]); harm = float(params.get("veto_harm", 20.0))
+    sc = _veto_scores(D, dets)
+    kept, vetoed = {}, {}
+    for f, rects in dets.items():
+        keep = []
+        for r in rects:
+            h1, hh = sc.get((int(f), int(r[0]), int(r[1]), int(r[2]), int(r[3])),
+                            (0.0, 0.0))
+            if h1 >= peak and hh >= harm:
+                vetoed.setdefault(f, []).append(r)
+            else:
+                keep.append(r)
+        kept[f] = keep
+    return kept, vetoed
+
+
 def count_matches(D, dets, match, thr, f_lo=None):
     """Per-instance TP/FP/FN of {frame: [rects]} vs GT: every matched GT = 1 TP,
     every unmatched GT = 1 FN, every detection matching no GT = 1 FP (so one good
@@ -739,6 +871,8 @@ def _compute_job(D, mode, params, abort_cb=None):
         f0 = first_gt_frame(D)
         if f0 is not None:
             dets = {f: r for f, r in dets.items() if f >= f0}
+    if float(params.get("veto_peak", 0) or 0) > 0:   # post-detection veto
+        dets, res["vetoed"] = _apply_veto(D, dets, params)
     caches = _score_caches(D, dets, params.get("match", "center"))
     return res, dets, caches, comps
 
@@ -1281,12 +1415,17 @@ def launch_gui(seq, mode, data_dir, p0, match="center", match_thr=None,
         for (bx1, by1, bx2, by2) in det_rects:
             ax_ov.add_patch(Rectangle((bx1, by1), bx2 - bx1, by2 - by1,
                                       fill=False, edgecolor="lime", lw=1.5))
+        vet = list((r.get("vetoed") or {}).get(f, []))   # removed by the veto
+        for (bx1, by1, bx2, by2) in vet:
+            ax_ov.add_patch(Rectangle((bx1, by1), bx2 - bx1, by2 - by1, fill=False,
+                                      edgecolor="orange", lw=1.5, ls="--"))
+        vlab = f", {len(vet)} vetoed (orange)" if vet else ""
         mtch = state["match"]
         best = _best_of((_match_score(g, d, mtch) for g in gts for d in det_rects), mtch)
         blab = (f"best {mtch}={best:.2f}" if (gts and det_rects and np.isfinite(best))
                 else "no match")
         ax_ov.set_title(f"{G['seq']}  frame {f}: {len(gts)} GT (cyan), "
-                        f"{len(det_rects)} det (lime), {blab}", fontsize=10)
+                        f"{len(det_rects)} det (lime){vlab}, {blab}", fontsize=10)
 
     def refresh(_=None):
         """UI-only: mark the caches stale and hand the WHOLE computation (stage,
@@ -1837,13 +1976,18 @@ def launch_gui_tk(seq, mode, data_dir, p0, match="center", match_thr=None,
         for (x1, y1, x2, y2) in det_rects[:300]:     # would freeze the canvas draw
             ax_ov.add_patch(Rectangle((x1, y1), x2 - x1, y2 - y1, fill=False,
                                       edgecolor="lime", lw=1.5))
+        vet = list((r.get("vetoed") or {}).get(f, []))   # removed by the veto
+        for (x1, y1, x2, y2) in vet[:300]:
+            ax_ov.add_patch(Rectangle((x1, y1), x2 - x1, y2 - y1, fill=False,
+                                      edgecolor="orange", lw=1.5, ls="--"))
+        vlab = f", {len(vet)} vetoed (orange)" if vet else ""
         mtch = state["match"]
         best = _best_of((_match_score(g, d, mtch) for g in gts for d in det_rects), mtch)
         blab = (f"best {mtch}={best:.2f}" if (gts and det_rects and np.isfinite(best))
                 else "no match")
         more = f" (+{extra} not drawn)" if extra else ""
         ax_ov.set_title(f"{G['seq']}  frame {f}: {len(gts)} GT (cyan), "
-                        f"{len(det_rects)} det (lime){more}, {blab}", fontsize=10)
+                        f"{len(det_rects)} det (lime){more}{vlab}, {blab}", fontsize=10)
 
     def _metrics_text():
         gb = G.get("gt_best")
@@ -2269,6 +2413,14 @@ def main():
                          "(strict acquisition, loose sustain; 1 = off).")
     ap.add_argument("--track-predict", action="store_true",
                     help="Tracking: extrapolate anchors with track velocity.")
+    ap.add_argument("--veto-peak", type=float, default=0.0,
+                    help="Post-detection veto: delete a box whose pooled raw-event "
+                         "spectrum has a 60-250 Hz line at least this many times "
+                         "its median, with a 2nd / 3rd harmonic >= --veto-harm "
+                         "(0 = off; needs the case's raw events).")
+    ap.add_argument("--veto-harm", type=float, default=20.0,
+                    help="Post-detection veto: required height of the 2f / 3f "
+                         "line (times the median).")
     ap.add_argument("--skip-start", action=argparse.BooleanOptionalAction,
                     default=True,
                     help="Ignore each case's frames BEFORE the first GT "
@@ -2287,7 +2439,8 @@ def main():
              min_snr_sum=args.min_snr_sum, min_snr_avg=args.min_snr_avg,
              persist_m=args.persist_m, persist_k=args.persist_k,
              track_coast=args.track_coast, track_confirm=args.track_confirm,
-             track_acquire=args.track_acquire, track_predict=args.track_predict)
+             track_acquire=args.track_acquire, track_predict=args.track_predict,
+             veto_peak=args.veto_peak, veto_harm=args.veto_harm)
 
     if args.report:
         D = load_D(args.seq, args.mode, args.data_dir)
